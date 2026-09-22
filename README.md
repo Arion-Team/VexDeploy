@@ -118,7 +118,7 @@ Defaults always pass validation (fixes the old 5GB / min-10GB mismatch).
 
 ### Admin — access
 
-`/setinvites` `/addinvites` `/removeinvites` `/resetinvites` `/blacklist` `/unblacklist` `/ban_user` `/unban_user` `/list_banned` `/vps-enable` `/vps-disable` `/setlogchannel` `/setcompletionchannel` `/add_admin` `/remove_admin` `/list_admins`
+`/setinvites` `/addinvites` `/removeinvites` `/resetinvites` `/resetcooldown` `/blacklist` `/unblacklist` `/ban_user` `/unban_user` `/list_banned` `/vps-enable` `/vps-disable` `/setlogchannel` `/setcompletionchannel` `/add_admin` `/remove_admin` `/list_admins`
 
 ### Admin — VPS
 

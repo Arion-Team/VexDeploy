@@ -457,6 +457,9 @@ class Database:
     def get_setting_str(self, key: str, default: str = "") -> str:
         return str(self.get_setting(key, default))
 
+    def delete_setting(self, key: str) -> None:
+        self._exec("DELETE FROM system_settings WHERE key = ?", (key,))
+
     # ── admins / bans ───────────────────────────────────────
     def add_admin(self, user_id: str, added_by: str = "") -> None:
         self._exec(

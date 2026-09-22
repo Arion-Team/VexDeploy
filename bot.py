@@ -438,6 +438,7 @@ async def provision(
         branding_version=int(bot.branding.active().get("version", 1)),
     )
     bot.db.log_deployment(author_id, vps_id, "create", "ok", result.container_id[:12])
+    bot.db.delete_setting(f"cooldown_cleared_{author_id}")
 
     await edit(f"{progress_bar(80)} 80% — installing branding/MOTD…")
     await post_deployment_setup(result.container_id, status_msg, author_id, vps_id)
@@ -519,6 +520,16 @@ def cooldown_ok(owner_id: str) -> tuple[bool, str]:
             last = last.replace(tzinfo=timezone.utc)
     except ValueError:
         return True, ""
+    cleared_raw = str(bot.db.get_setting(f"cooldown_cleared_{owner_id}", "") or "")
+    if cleared_raw:
+        try:
+            cleared = datetime.fromisoformat(cleared_raw)
+            if cleared.tzinfo is None:
+                cleared = cleared.replace(tzinfo=timezone.utc)
+            if last <= cleared:
+                return True, ""
+        except ValueError:
+            pass
     next_at = last + timedelta(hours=hours)
     now = datetime.now(timezone.utc)
     if now < next_at:
@@ -549,6 +560,7 @@ async def help_cmd(ctx: commands.Context) -> None:
         "`/edit_vps` `/emergency_stop` `/emergency_remove` `/admin_stats` `/global_stats` "
         "`/system_info` `/cleanup_vps` `/backup_data` `/restore_data` "
         "`/setinvites` `/addinvites` `/removeinvites` `/resetinvites` "
+        "`/resetcooldown` "
         "`/blacklist` `/unblacklist` `/vps-enable` `/vps-disable` "
         "`/setlogchannel` `/setcompletionchannel` `/brand*` `/brand-reinstall` "
         "`/brand-update-existing` `/add_admin` `/remove_admin` `/list_admins` "
@@ -1481,6 +1493,26 @@ async def resetinvites_cmd(ctx: commands.Context, user: discord.User) -> None:
     await ensure_slash_admin_ctx(ctx)
     bot.db.reset_invites(str(user.id))
     await ctx.send(f"✅ Reset invite progress for {user.mention}", ephemeral=True)
+
+
+@bot.hybrid_command(
+    name="resetcooldown",
+    description="Reset a user's VPS creation cooldown (Admin only)",
+)
+@app_commands.describe(user="User to reset (defaults to you)")
+async def resetcooldown_cmd(
+    ctx: commands.Context, user: Optional[discord.User] = None
+) -> None:
+    await ensure_slash_admin_ctx(ctx)
+    target = user or ctx.author
+    bot.db.set_setting(
+        f"cooldown_cleared_{target.id}", datetime.now(timezone.utc).isoformat()
+    )
+    logger.info("Admin reset cooldown for %s", target.id)
+    await ctx.send(
+        f"✅ Cooldown reset for {target.mention} — they can create a VPS now.",
+        ephemeral=True,
+    )
 
 
 @bot.hybrid_command(name="addinvites", description="Manually add valid invites (Admin only)")
