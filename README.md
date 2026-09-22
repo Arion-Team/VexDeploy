@@ -111,7 +111,7 @@ Defaults always pass validation (fixes the old 5GB / min-10GB mismatch).
 
 ### User
 
-`/createvps` `/invites` `/leaderboard` `/vps` `/list` `/manage_vps` `/connect_vps` `/vps_stats` `/change_ssh_password` `/vps_shell` `/vps_console` `/sshx` `/tmate` `/stop_sshx` `/stop_tmate` `/vps_usage` `/transfer_vps` `/refresh-motd` `/help`
+`/createvps` `/invites` `/leaderboard` `/vps` `/list` `/manage_vps` `/connect_vps` `/vps_stats` `/change_ssh_password` `/vps_shell` `/vps_console` `/vps_usage` `/transfer_vps` `/refresh-motd` `/help`
 
 ### Admin — access
 
@@ -127,19 +127,27 @@ Defaults always pass validation (fixes the old 5GB / min-10GB mismatch).
 
 ---
 
-## Reverse SSH (sshx / tmate)
+## VPS dashboard (`/manage_vps`)
 
-When the container has no public IP (or port 22 is unreachable), start a reverse share session:
+`/manage_vps <vps_id>` opens an interactive button dashboard (ephemeral, owner/admin only):
 
-```text
-/sshx <vps_id>    # installs sshx if needed → share URL (DM)
-/tmate <vps_id>   # installs tmate if needed → ssh command (DM)
-/stop_sshx <vps_id>
-/stop_tmate <vps_id>
-```
+| Button | Action |
+|--------|--------|
+| ▶ Start / ⏹ Stop / ↻ Restart | Lifecycle |
+| 📊 Stats | Live CPU/memory/status |
+| 📋 Logs | Last 50 lines of container logs |
+| 🔄 SSH | DM: normal SSH + password + **sshx** + **tmate** reverse share |
+| 🔁 Reinstall | Two-step confirm — recreates container (same plan/owner), wipes data |
+| 🗑 Delete | Two-step confirm — removes container + DB row |
 
-- Tools are installed on demand inside the container (curl + package manager)
-- Session stays up while the container runs; stop with `/stop_sshx` or `/stop_tmate`
+### Reverse SSH (sshx / tmate)
+
+Started from the dashboard **SSH** button when the container has no public IP:
+
+- Tools install on demand inside the container (curl + package manager)
+- sshx is detached via PID file (never `pkill -f` — that killed the launcher)
+- tmate polls `#{tmate_ssh}` / `#{tmate_ssh_ro}` with diagnostics on timeout
+- Session lives while the container runs
 - Normal `ssh user@ip -p 22` still works via `/connect_vps` / `/vps_shell`
 
 ---

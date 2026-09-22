@@ -422,7 +422,7 @@ async def help_cmd(ctx: commands.Context) -> None:
     user_cmds = (
         "`/createvps` `/invites` `/leaderboard` `/vps` `/list` "
         "`/manage_vps` `/connect_vps` `/vps_stats` `/change_ssh_password` "
-        "`/vps_shell` `/vps_console` `/sshx` `/tmate` `/stop_sshx` `/stop_tmate` "
+        "`/vps_shell` `/vps_console` "
         "`/vps_usage` `/transfer_vps` `/refresh-motd` `/help`"
     )
     admin_cmds = (
@@ -731,7 +731,7 @@ async def vps_shell_cmd(ctx: commands.Context, vps_id: str) -> None:
     await ctx.send(
         f"SSH shell for `{vps_id}`:\n"
         f"```\nssh {row['username']}@{row['ip_address']} -p {row['ssh_port'] or 22}\n```"
-        f"Password via `/connect_vps`. No public IP? Use `/sshx` or `/tmate`.",
+        f"Password via `/connect_vps`. No public IP? Open `/manage_vps` → **SSH**.",
         ephemeral=True,
     )
 
@@ -759,115 +759,6 @@ def _require_user_vps(ctx: commands.Context, vps_id: str):
     return row
 
 
-@bot.hybrid_command(name="sshx", description="Start sshx reverse SSH session for a VPS")
-@app_commands.describe(vps_id="VPS identifier")
-async def sshx_cmd(ctx: commands.Context, vps_id: str) -> None:
-    row = _require_user_vps(ctx, vps_id)
-    if not row:
-        await ctx.send("VPS not found or provider unavailable.", ephemeral=True)
-        return
-    if row["status"] != "running":
-        await ctx.send("VPS is not running.", ephemeral=True)
-        return
-    await ctx.send(f"⏳ Starting **sshx** on `{vps_id}`…", ephemeral=True)
-    try:
-        link = await asyncio.to_thread(bot.provider.start_sshx, row["container_id"])
-    except ProviderError as exc:
-        await ctx.send(f"❌ sshx failed: {exc}", ephemeral=True)
-        return
-    except Exception as exc:
-        await ctx.send(f"❌ sshx failed: {exc}", ephemeral=True)
-        return
-    embed = discord.Embed(
-        title=f"sshx — {vps_id}",
-        description=(
-            "Open this link or run the command to join a shared shell:\n"
-            f"```\n{link}\n```"
-        ),
-        color=discord.Color.green(),
-    )
-    embed.add_field(name="Notes", value="Session lives while the container runs. `/stop_sshx` to end it.", inline=False)
-    embed.set_footer(text=bot.branding.active().get("footer") or "VexDeploy")
-    try:
-        await ctx.author.send(embed=embed)
-        if ctx.interaction:
-            await ctx.send("Sent sshx link via DM.", ephemeral=True)
-        else:
-            await ctx.send("Sent sshx link via DM.")
-    except discord.HTTPException:
-        await ctx.send(embed=embed, ephemeral=True)
-
-
-@bot.hybrid_command(name="tmate", description="Start tmate reverse SSH session for a VPS")
-@app_commands.describe(vps_id="VPS identifier")
-async def tmate_cmd(ctx: commands.Context, vps_id: str) -> None:
-    row = _require_user_vps(ctx, vps_id)
-    if not row:
-        await ctx.send("VPS not found or provider unavailable.", ephemeral=True)
-        return
-    if row["status"] != "running":
-        await ctx.send("VPS is not running.", ephemeral=True)
-        return
-    await ctx.send(f"⏳ Starting **tmate** on `{vps_id}`…", ephemeral=True)
-    try:
-        link = await asyncio.to_thread(bot.provider.start_tmate, row["container_id"])
-    except ProviderError as exc:
-        await ctx.send(f"❌ tmate failed: {exc}", ephemeral=True)
-        return
-    except Exception as exc:
-        await ctx.send(f"❌ tmate failed: {exc}", ephemeral=True)
-        return
-    embed = discord.Embed(
-        title=f"tmate — {vps_id}",
-        description=(
-            "Run this command for read-write SSH access:\n"
-            f"```\n{link}\n```\n"
-            "Read-only session is printed by tmate in-container as well."
-        ),
-        color=discord.Color.green(),
-    )
-    embed.add_field(name="Notes", value="Session lives while the container runs. `/stop_tmate` to end it.", inline=False)
-    embed.set_footer(text=bot.branding.active().get("footer") or "VexDeploy")
-    try:
-        await ctx.author.send(embed=embed)
-        if ctx.interaction:
-            await ctx.send("Sent tmate command via DM.", ephemeral=True)
-        else:
-            await ctx.send("Sent tmate command via DM.")
-    except discord.HTTPException:
-        await ctx.send(embed=embed, ephemeral=True)
-
-
-@bot.hybrid_command(name="stop_sshx", description="Stop an active sshx session on your VPS")
-@app_commands.describe(vps_id="VPS identifier")
-async def stop_sshx_cmd(ctx: commands.Context, vps_id: str) -> None:
-    row = _require_user_vps(ctx, vps_id)
-    if not row:
-        await ctx.send("VPS not found or provider unavailable.", ephemeral=True)
-        return
-    try:
-        await asyncio.to_thread(bot.provider.stop_remote_share, row["container_id"], "sshx")
-    except Exception as exc:
-        await ctx.send(f"❌ {exc}", ephemeral=True)
-        return
-    await ctx.send(f"Stopped sshx on `{vps_id}`.", ephemeral=True)
-
-
-@bot.hybrid_command(name="stop_tmate", description="Stop an active tmate session on your VPS")
-@app_commands.describe(vps_id="VPS identifier")
-async def stop_tmate_cmd(ctx: commands.Context, vps_id: str) -> None:
-    row = _require_user_vps(ctx, vps_id)
-    if not row:
-        await ctx.send("VPS not found or provider unavailable.", ephemeral=True)
-        return
-    try:
-        await asyncio.to_thread(bot.provider.stop_remote_share, row["container_id"], "tmate")
-    except Exception as exc:
-        await ctx.send(f"❌ {exc}", ephemeral=True)
-        return
-    await ctx.send(f"Stopped tmate on `{vps_id}`.", ephemeral=True)
-
-
 @bot.hybrid_command(name="vps_usage", description="Show your VPS usage statistics")
 async def vps_usage_cmd(ctx: commands.Context) -> None:
     rows = bot.db.list_user_vps(str(ctx.author.id))
@@ -887,18 +778,326 @@ async def vps_usage_cmd(ctx: commands.Context) -> None:
     await ctx.send(embed=embed, ephemeral=True)
 
 
-@bot.hybrid_command(name="manage_vps", description="Manage a VPS instance")
-@app_commands.describe(vps_id="VPS identifier", action="start|stop|restart")
-@app_commands.choices(
-    action=[
-        app_commands.Choice(name="start", value="start"),
-        app_commands.Choice(name="stop", value="stop"),
-        app_commands.Choice(name="restart", value="restart"),
-    ]
+def _manage_authorized(user: discord.abc.User, row) -> bool:
+    if str(row["owner_id"]) == str(user.id):
+        return True
+    if isinstance(user, discord.Member) and user.guild and bot.member_is_admin(user):
+        return True
+    return bot.is_admin_user(user)
+
+
+def build_manage_embed(row) -> discord.Embed:
+    brand = bot.branding.active()
+    status = str(row["status"])
+    color = (
+        discord.Color.green()
+        if status == "running"
+        else discord.Color.orange() if status in {"stopped", "suspended"} else discord.Color.red()
+    )
+    embed = discord.Embed(
+        title=f"Dashboard — {row['vps_id']}",
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Status", value=f"`{status}`", inline=True)
+    embed.add_field(name="IP", value=f"`{row['ip_address'] or '—'}`", inline=True)
+    embed.add_field(name="SSH", value=f"port `{row['ssh_port'] or 22}`", inline=True)
+    embed.add_field(name="User", value=f"`{row['username']}`", inline=True)
+    embed.add_field(
+        name="Plan",
+        value=f"{human_mb(row['memory_mb'])} · {row['cpus']} CPU · {row['disk_gb']}GB",
+        inline=True,
+    )
+    embed.add_field(name="Image", value=f"`{row['os_image']}`", inline=True)
+    embed.add_field(name="Brand", value=str(row["brand_label"] or "—"), inline=True)
+    embed.add_field(name="Owner", value=f"<@{row['owner_id']}>", inline=True)
+    embed.add_field(name="Container", value=f"`{(row['container_id'] or '')[:12]}`", inline=True)
+    embed.set_footer(
+        text=brand.get("footer") or brand.get("brand_name", "VexDeploy")
+    )
+    return embed
+
+
+class ManageVPSView(discord.ui.View):
+    """Interactive dashboard for a single VPS: lifecycle, stats, logs, SSH, reinstall, delete."""
+
+    def __init__(self, vps_id: str, owner_id: str, invoker_id: str) -> None:
+        super().__init__(timeout=600)
+        self.vps_id = vps_id
+        self.owner_id = str(owner_id)
+        self.invoker_id = str(invoker_id)
+        self._armed: dict[str, bool] = {}
+
+    def get_row(self):
+        return bot.db.get_vps(self.vps_id)
+
+    async def authorized(self, interaction: discord.Interaction) -> bool:
+        row = self.get_row()
+        if not row:
+            msg = "VPS not found."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+            return False
+        if not _manage_authorized(interaction.user, row):
+            msg = "Not your VPS."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+            return False
+        if bot.provider is None:
+            msg = "Provider unavailable."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+            return False
+        return True
+
+    async def _lifecycle(self, interaction: discord.Interaction, action: str) -> None:
+        if not await self.authorized(interaction):
+            return
+        row = self.get_row()
+        assert row is not None
+        await interaction.response.defer(ephemeral=True)
+        try:
+            if action == "start":
+                await asyncio.to_thread(bot.provider.start, row["container_id"])
+                status = "running"
+            elif action == "stop":
+                await asyncio.to_thread(bot.provider.stop, row["container_id"])
+                status = "stopped"
+            else:
+                await asyncio.to_thread(bot.provider.restart, row["container_id"])
+                status = "running"
+        except Exception as exc:
+            await interaction.followup.send(f"❌ {exc}", ephemeral=True)
+            return
+        bot.db.update_vps_status(self.vps_id, status)
+        fresh = self.get_row() or row
+        embed = build_manage_embed(fresh)
+        await interaction.followup.send(
+            f"✅ `{self.vps_id}` → **{status}**",
+            embed=embed,
+            view=self,
+            ephemeral=True,
+        )
+
+    async def do_delete(self) -> None:
+        row = self.get_row()
+        if row and bot.provider:
+            try:
+                await asyncio.to_thread(bot.provider.remove, row["container_id"])
+            except ProviderError:
+                pass
+        bot.db.delete_vps(self.vps_id)
+
+    async def do_reinstall(self):
+        row = self.get_row()
+        if not row:
+            raise ProviderError("VPS not found")
+        assert bot.provider is not None
+        try:
+            await asyncio.to_thread(bot.provider.remove, row["container_id"])
+        except ProviderError:
+            pass
+
+        def _create():
+            return bot.provider.create_vps(
+                owner_id=str(row["owner_id"]),
+                memory_mb=int(row["memory_mb"]),
+                cpus=int(row["cpus"]),
+                disk_gb=int(row["disk_gb"]),
+                image=str(row["os_image"]),
+                vps_id=self.vps_id,
+                max_containers=int(bot.db.get_setting("max_containers", config.MAX_CONTAINERS)),
+            )
+
+        result = await asyncio.to_thread(_create)
+        with bot.db._lock:
+            bot.db.conn.execute(
+                """
+                UPDATE vps_instances
+                SET container_id=?, container_name=?, ip_address=?, ssh_port=?,
+                    password_plain=?, password_hash=?, status='running', last_seen=?
+                WHERE vps_id=?
+                """,
+                (
+                    result.container_id,
+                    result.container_name,
+                    result.ip_address,
+                    result.ssh_port,
+                    result.password,
+                    result.password,
+                    datetime.now(timezone.utc).isoformat(),
+                    self.vps_id,
+                ),
+            )
+            bot.db.conn.commit()
+        bot.db.log_deployment(
+            str(row["owner_id"]), self.vps_id, "reinstall", "ok", result.container_id[:12]
+        )
+        try:
+            await post_deployment_setup(result.container_id, None, str(row["owner_id"]), self.vps_id)
+        except Exception:
+            pass
+        try:
+            user = await bot.fetch_user(int(row["owner_id"]))
+            await send_credentials_dm(
+                user,
+                {"vps_id": self.vps_id, **dict(result), "password": result.password},
+                None,
+            )
+        except Exception:
+            pass
+        return self.get_row()
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                child.disabled = True
+
+    @discord.ui.button(label="▶ Start", style=discord.ButtonStyle.success, custom_id="manage_start", row=0)
+    async def start_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._lifecycle(interaction, "start")
+
+    @discord.ui.button(label="⏹ Stop", style=discord.ButtonStyle.secondary, custom_id="manage_stop", row=0)
+    async def stop_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._lifecycle(interaction, "stop")
+
+    @discord.ui.button(label="↻ Restart", style=discord.ButtonStyle.primary, custom_id="manage_restart", row=0)
+    async def restart_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._lifecycle(interaction, "restart")
+
+    @discord.ui.button(label="📊 Stats", style=discord.ButtonStyle.secondary, custom_id="manage_stats", row=1)
+    async def stats_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await self.authorized(interaction):
+            return
+        row = self.get_row()
+        assert row is not None
+        await interaction.response.defer(ephemeral=True)
+        try:
+            stats = await asyncio.to_thread(bot.provider.stats, row["container_id"])
+        except Exception as exc:
+            await interaction.followup.send(f"❌ {exc}", ephemeral=True)
+            return
+        embed = discord.Embed(title=f"Stats — {self.vps_id}", color=discord.Color.blurple())
+        embed.add_field(name="Status", value=str(stats.get("status", "?")), inline=True)
+        embed.add_field(name="CPU", value=f"{stats.get('cpu_percent', 0)}%", inline=True)
+        embed.add_field(name="Memory", value=f"{stats.get('mem_used_mb', 0)} MB", inline=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="📋 Logs", style=discord.ButtonStyle.secondary, custom_id="manage_logs", row=1)
+    async def logs_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await self.authorized(interaction):
+            return
+        row = self.get_row()
+        assert row is not None
+        await interaction.response.defer(ephemeral=True)
+        try:
+            text = await asyncio.to_thread(bot.provider.logs, row["container_id"], 50)
+        except Exception as exc:
+            await interaction.followup.send(f"❌ Logs failed: {exc}", ephemeral=True)
+            return
+        if not text.strip():
+            text = "(no log output)"
+        if len(text) > 3800:
+            text = text[:3800] + "\n…[truncated]"
+        embed = discord.Embed(
+            title=f"Logs — {self.vps_id} (last 50)",
+            description=f"```\n{text}\n```",
+            color=discord.Color.dark_grey(),
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="🔑 SSH", style=discord.ButtonStyle.primary, custom_id="manage_ssh", row=1)
+    async def ssh_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await self.authorized(interaction):
+            return
+        row = self.get_row()
+        assert row is not None
+        if row["status"] != "running":
+            await interaction.response.send_message("VPS is not running.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        lines = [
+            f"**SSH — {self.vps_id}**",
+            f"```\nssh {row['username']}@{row['ip_address']} -p {row['ssh_port'] or 22}\n```",
+            f"Password: ||{row['password_plain']}||",
+        ]
+        try:
+            link = await asyncio.to_thread(bot.provider.start_sshx, row["container_id"])
+            lines.append(f"**sshx**\n```\n{link}\n```")
+        except Exception as exc:
+            lines.append(f"sshx: `{exc}`")
+        try:
+            cmd = await asyncio.to_thread(bot.provider.start_tmate, row["container_id"])
+            lines.append(f"**tmate**\n```\n{cmd}\n```")
+        except Exception as exc:
+            lines.append(f"tmate: `{exc}`")
+        body = "\n".join(lines)
+        if len(body) > 3900:
+            body = body[:3900] + "\n…[truncated]"
+        try:
+            await interaction.user.send(body)
+            await interaction.followup.send("🔑 SSH details sent via DM.", ephemeral=True)
+        except discord.HTTPException:
+            embed = discord.Embed(
+                title=f"SSH — {self.vps_id}", description=body[:3900], color=discord.Color.green()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="🔁 Reinstall", style=discord.ButtonStyle.danger, custom_id="manage_reinstall", row=2)
+    async def reinstall_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await self.authorized(interaction):
+            return
+        if not self._armed.get("reinstall"):
+            self._armed["reinstall"] = True
+            await interaction.response.send_message(
+                f"⚠️ Reinstall `{self.vps_id}`? Data wiped. Click **Reinstall** again to confirm.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            new_row = await self.do_reinstall()
+        except Exception as exc:
+            await interaction.followup.send(f"❌ Reinstall failed: {exc}", ephemeral=True)
+            return
+        embed = build_manage_embed(new_row) if new_row else None
+        await interaction.followup.send(
+            f"✅ `{self.vps_id}` reinstalled.", embed=embed, view=self, ephemeral=True
+        )
+
+    @discord.ui.button(label="🗑 Delete", style=discord.ButtonStyle.danger, custom_id="manage_delete", row=2)
+    async def delete_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await self.authorized(interaction):
+            return
+        if not self._armed.get("delete"):
+            self._armed["delete"] = True
+            await interaction.response.send_message(
+                f"⚠️ Permanently delete `{self.vps_id}`? Click **Delete** again to confirm.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await self.do_delete()
+        except Exception as exc:
+            await interaction.followup.send(f"❌ Delete failed: {exc}", ephemeral=True)
+            return
+        await interaction.followup.send(f"🗑️ Deleted `{self.vps_id}`", ephemeral=True)
+        self.stop()
+
+
+@bot.hybrid_command(
+    name="manage_vps",
+    description="Open the interactive VPS dashboard (start/stop/SSH/logs/delete)",
 )
-async def manage_vps_cmd(
-    ctx: commands.Context, vps_id: str, action: app_commands.Choice[str]
-) -> None:
+@app_commands.describe(vps_id="VPS identifier")
+async def manage_vps_cmd(ctx: commands.Context, vps_id: str) -> None:
     row = bot.db.get_vps(vps_id)
     is_admin = slash_admin_check_safe(ctx)
     if not row or (row["owner_id"] != str(ctx.author.id) and not is_admin):
@@ -907,22 +1106,14 @@ async def manage_vps_cmd(
     if bot.provider is None:
         await ctx.send("Provider unavailable.", ephemeral=True)
         return
-    act = action.value
-    try:
-        if act == "start":
-            await asyncio.to_thread(bot.provider.start, row["container_id"])
-            status = "running"
-        elif act == "stop":
-            await asyncio.to_thread(bot.provider.stop, row["container_id"])
-            status = "stopped"
-        else:
-            await asyncio.to_thread(bot.provider.restart, row["container_id"])
-            status = "running"
-    except ProviderError as exc:
-        await ctx.send(f"❌ {exc}", ephemeral=True)
-        return
-    bot.db.update_vps_status(vps_id, status)
-    await ctx.send(f"✅ `{vps_id}` → **{status}**", ephemeral=True)
+    embed = build_manage_embed(row)
+    view = ManageVPSView(vps_id, owner_id=str(row["owner_id"]), invoker_id=str(ctx.author.id))
+    await ctx.send(
+        f"🎛 **Dashboard** for `{vps_id}` — use the buttons below.",
+        embed=embed,
+        view=view,
+        ephemeral=True,
+    )
 
 
 @bot.hybrid_command(name="transfer_vps", description="Transfer a VPS to another user")

@@ -309,10 +309,15 @@ class DockerProvider:
         text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else str(output or "")
         return int(code), text
 
+    def logs(self, container_id: str, tail: int = 50) -> str:
+        c = self.get_container(container_id)
+        raw = c.logs(tail=max(1, int(tail)), timestamps=False)
+        return raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw or "")
+
     # ── reverse SSH (sshx / tmate) ──────────────────────────
     def _ensure_remote_tools(self, container_id: str) -> None:
         script = (
-            "set -e; "
+            "set +e; "
             "export DEBIAN_FRONTEND=noninteractive; "
             "if command -v apt-get >/dev/null 2>&1; then "
             "  apt-get update -qq >/dev/null 2>&1 || true; "
@@ -340,11 +345,13 @@ class DockerProvider:
             "   curl -fsSL --retry 3 --connect-timeout 15 "
             "    \"https://github.com/ekzhang/sshx/releases/latest/download/sshx-${A}-unknown-linux-gnu\" "
             "    -o /usr/local/bin/sshx) && chmod +x /usr/local/bin/sshx || true; "
-            "fi"
+            "fi; "
+            "command -v sshx >/dev/null 2>&1 && echo HAVE_SSHX || echo NO_SSHX; "
+            "command -v tmate >/dev/null 2>&1 && echo HAVE_TMATE || echo NO_TMATE"
         )
         code, out = self.exec_command(container_id, script, timeout=120)
-        if code != 0:
-            logger.warning("remote tools install exit %s: %s", code, out[-400:])
+        if code != 0 or "NO_SSHX" in (out or ""):
+            logger.warning("remote tools install exit %s: %s", code, (out or "")[-400:])
 
     @staticmethod
     def _extract_sshx_url(text: str) -> str:
@@ -374,24 +381,37 @@ class DockerProvider:
         return ""
 
     def start_sshx(self, container_id: str, timeout: int = 45) -> str:
-        """Install sshx if needed and return a share URL/SSH command."""
+        """Install sshx if needed and return a share URL/SSH command.
+
+        Detaches via PID file only — never pkill -f (that SIGTERMs the launcher shell).
+        """
         self._ensure_remote_tools(container_id)
         script = (
-            "pkill -f '[s]shx' >/dev/null 2>&1 || true; "
-            "rm -f /tmp/sshx.log /tmp/sshx.out; "
+            "set +e; "
+            # kill only by exact name / pid file — never match the parent bash cmdline
+            "if [ -f /tmp/sshx.pid ]; then kill \"$(cat /tmp/sshx.pid 2>/dev/null)\" >/dev/null 2>&1 || true; fi; "
+            "pkill -x sshx >/dev/null 2>&1 || true; "
+            "rm -f /tmp/sshx.log /tmp/sshx.pid /tmp/sshx.out; "
             "if ! command -v sshx >/dev/null 2>&1; then "
             "  echo 'sshx binary missing'; exit 2; "
             "fi; "
-            "nohup sshx >/tmp/sshx.log 2>&1 & "
+            # fully detach stdin/stdout so sshx cannot block on a missing TTY
+            "setsid sshx </dev/null >/tmp/sshx.log 2>&1 & "
+            "echo $! > /tmp/sshx.pid; "
             "for i in $(seq 1 " + str(timeout) + "); do "
-            "  if grep -Eq 'sshx\\.io|ssh .*@sshx' /tmp/sshx.log 2>/dev/null; then break; fi; "
-            "  if ! pgrep -f '[s]shx' >/dev/null 2>&1; then break; fi; "
+            "  if grep -Eq 'https://sshx\\.io|ssh .*@sshx\\.io' /tmp/sshx.log 2>/dev/null; then break; fi; "
+            "  PID=$(cat /tmp/sshx.pid 2>/dev/null); "
+            "  if [ -n \"$PID\" ] && ! kill -0 \"$PID\" 2>/dev/null; then break; fi; "
             "  sleep 1; "
             "done; "
             "cat /tmp/sshx.log 2>/dev/null || true"
         )
         code, out = self.exec_command(container_id, script, timeout=timeout + 30)
         url = self._extract_sshx_url(out or "")
+        if not url:
+            # second chance: re-read the log file (launcher may have exited after writing URL)
+            _, out2 = self.exec_command(container_id, "cat /tmp/sshx.log 2>/dev/null || true", timeout=15)
+            url = self._extract_sshx_url(out2 or "")
         if not url:
             raise ProviderError(
                 "sshx did not return a share link "
@@ -410,30 +430,39 @@ class DockerProvider:
             "SOCK=/tmp/tmate.sock; "
             "tmate -S \"$SOCK\" kill-server >/dev/null 2>&1 || true; "
             "rm -f \"$SOCK\"; "
-            "tmate -S \"$SOCK\" new-session -d >/dev/null 2>&1; "
+            # detached session; tmate writes keys once the relay accepts
+            "tmate -S \"$SOCK\" new-session -d >/tmp/tmate.log 2>&1; "
             "for i in $(seq 1 " + str(timeout) + "); do "
             "  SSH=$(tmate -S \"$SOCK\" show -qF '#{tmate_ssh}' 2>/dev/null); "
-            "  if [ -n \"$SSH\" ] && [ \"$SSH\" != \"\" ]; then echo \"$SSH\"; exit 0; fi; "
+            "  if [ -n \"$SSH\" ]; then echo \"$SSH\"; exit 0; fi; "
+            "  RO=$(tmate -S \"$SOCK\" show -qF '#{tmate_ssh_ro}' 2>/dev/null); "
+            "  if [ -n \"$RO\" ]; then echo \"$RO\"; exit 0; fi; "
             "  sleep 1; "
             "done; "
-            "tmate -S \"$SOCK\" show -qF '#{tmate_ssh}' 2>/dev/null; "
+            # diagnostics for callers
+            "echo 'TMATE_TIMEOUT'; "
+            "cat /tmp/tmate.log 2>/dev/null || true; "
+            "tmate -S \"$SOCK\" show 2>/dev/null | head -n 20 || true; "
             "exit 3"
         )
         code, out = self.exec_command(container_id, script, timeout=timeout + 30)
         ssh_cmd = self._extract_tmate_ssh(out or "")
         if not ssh_cmd:
-            # raw line may already be the tmate ssh string
             for line in (out or "").splitlines():
                 line = line.strip()
-                if line and " " not in line.split("@")[0] and "@" in line:
+                if line and " " not in line.split("@")[0] and "@" in line and "TMATE" not in line:
                     ssh_cmd = line
                     break
             if not ssh_cmd and out and "@" in out:
                 ssh_cmd = out.strip().splitlines()[-1].strip()
         if not ssh_cmd:
+            hint = ""
+            low = (out or "").lower()
+            if "could not resolve" in low or "network" in low or "connection" in low:
+                hint = " Container may have no outbound network to tmate.io."
             raise ProviderError(
                 "tmate did not return an SSH command "
-                f"(exit {code}). Check outbound network / tmate package."
+                f"(exit {code}). Check outbound network / tmate package.{hint}"
             )
         if not ssh_cmd.startswith("ssh "):
             ssh_cmd = f"ssh {ssh_cmd}"
@@ -442,11 +471,17 @@ class DockerProvider:
     def stop_remote_share(self, container_id: str, tool: str = "all") -> None:
         """Best-effort stop of sshx/tmate sessions inside a container."""
         if tool in ("sshx", "all"):
-            self.exec_command(container_id, "pkill -f '[s]shx' || true", timeout=15)
+            # PID file + exact name only — never pkill -f (matches parent shell)
+            self.exec_command(
+                container_id,
+                "if [ -f /tmp/sshx.pid ]; then kill \"$(cat /tmp/sshx.pid 2>/dev/null)\" >/dev/null 2>&1 || true; fi; "
+                "pkill -x sshx >/dev/null 2>&1 || true; true",
+                timeout=15,
+            )
         if tool in ("tmate", "all"):
             self.exec_command(
                 container_id,
-                "tmate -S /tmp/tmate.sock kill-server 2>/dev/null || pkill -f '[t]mate' || true",
+                "tmate -S /tmp/tmate.sock kill-server 2>/dev/null || true; true",
                 timeout=15,
             )
 
