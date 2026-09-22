@@ -316,44 +316,79 @@ class DockerProvider:
 
     # ── reverse SSH (sshx / tmate) ──────────────────────────
     def _ensure_remote_tools(self, container_id: str) -> str:
-        """Install curl/tmate/sshx. Returns a status log for diagnostics."""
-        # Official sshx installer (GitHub releases ship no binary assets).
-        # Keep apt quiet+short so small containers don't OOM (exit 137).
-        script = (
-            "set +e; "
-            "export DEBIAN_FRONTEND=noninteractive; "
-            "export APT_LISTCHANGES_FRONTEND=none; "
-            "echo '--- install ---'; "
-            "if command -v apt-get >/dev/null 2>&1; then "
-            "  timeout 60 apt-get update -qq >/tmp/vex-apt.log 2>&1 || true; "
-            "  timeout 90 apt-get install -y -qq --no-install-recommends curl ca-certificates tmate "
-            "    >>/tmp/vex-apt.log 2>&1 || "
-            "  timeout 60 apt-get install -y -qq --no-install-recommends curl ca-certificates "
-            "    >>/tmp/vex-apt.log 2>&1 || true; "
-            "elif command -v apk >/dev/null 2>&1; then "
-            "  timeout 60 apk add --no-cache curl ca-certificates tmate >/tmp/vex-apt.log 2>&1 || "
-            "  timeout 60 apk add --no-cache curl ca-certificates >>/tmp/vex-apt.log 2>&1 || true; "
-            "elif command -v yum >/dev/null 2>&1; then "
-            "  timeout 90 yum install -y curl ca-certificates tmate >/tmp/vex-apt.log 2>&1 || "
-            "  timeout 60 yum install -y curl ca-certificates >>/tmp/vex-apt.log 2>&1 || true; "
-            "fi; "
-            "if ! command -v sshx >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then "
-            "  echo 'sshx: official installer'; "
-            "  timeout 45 curl -sSf --retry 2 --connect-timeout 10 https://sshx.io/get "
-            "    -o /tmp/sshx-get.sh && "
-            "  timeout 30 sh /tmp/sshx-get.sh >/tmp/vex-sshx-install.log 2>&1 || "
-            "  echo 'sshx installer failed'; "
-            "fi; "
-            "command -v sshx >/dev/null 2>&1 && echo HAVE_SSHX || echo NO_SSHX; "
-            "command -v tmate >/dev/null 2>&1 && echo HAVE_TMATE || echo NO_TMATE; "
-            "command -v curl >/dev/null 2>&1 && echo HAVE_CURL || echo NO_CURL; "
-            "echo '--- apt tail ---'; "
-            "tail -n 30 /tmp/vex-apt.log 2>/dev/null || true; "
-            "echo '--- sshx install tail ---'; "
-            "tail -n 30 /tmp/vex-sshx-install.log 2>/dev/null || true"
-        )
+        """Install curl/tmate/sshx. Returns a status log for diagnostics.
+
+        Scripts are written to a file (no nested quotes / single-line # comments).
+        """
+        script = r"""set +e
+export DEBIAN_FRONTEND=noninteractive
+export APT_LISTCHANGES_FRONTEND=none
+echo '--- install ---'
+if command -v apt-get >/dev/null 2>&1; then
+  timeout 60 apt-get update -qq >/tmp/vex-apt.log 2>&1 || true
+  timeout 90 apt-get install -y -qq --no-install-recommends curl ca-certificates tmate \
+    >>/tmp/vex-apt.log 2>&1 || \
+  timeout 60 apt-get install -y -qq --no-install-recommends curl ca-certificates \
+    >>/tmp/vex-apt.log 2>&1 || true
+elif command -v apk >/dev/null 2>&1; then
+  timeout 60 apk add --no-cache curl ca-certificates tmate >/tmp/vex-apt.log 2>&1 || \
+  timeout 60 apk add --no-cache curl ca-certificates >>/tmp/vex-apt.log 2>&1 || true
+elif command -v yum >/dev/null 2>&1; then
+  timeout 90 yum install -y curl ca-certificates tmate >/tmp/vex-apt.log 2>&1 || \
+  timeout 60 yum install -y curl ca-certificates >>/tmp/vex-apt.log 2>&1 || true
+fi
+
+# tmate: static binary fallback (Ubuntu docker often lacks universe / package)
+if ! command -v tmate >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+  echo 'tmate: trying static binary'
+  ARCH=$(uname -m)
+  case "$ARCH" in
+    x86_64|amd64) TA=amd64 ;;
+    aarch64|arm64) TA=arm64v8 ;;
+    armv7l|armhf) TA=arm32v7 ;;
+    armv6*) TA=arm32v6 ;;
+    i386|i686) TA=i386 ;;
+    *) TA=amd64 ;;
+  esac
+  TM_VER=2.4.0
+  TM_URL="https://github.com/tmate-io/tmate/releases/download/${TM_VER}/tmate-${TM_VER}-static-linux-${TA}.tar.xz"
+  if timeout 45 curl -fsSL --retry 2 --connect-timeout 10 "$TM_URL" -o /tmp/tmate.tar.xz; then
+    mkdir -p /tmp/tmate-extract
+    if tar -xJf /tmp/tmate.tar.xz -C /tmp/tmate-extract 2>/tmp/vex-tmate-extract.log; then
+      SRC=$(find /tmp/tmate-extract -type f -name tmate 2>/dev/null | head -n1)
+      if [ -n "$SRC" ]; then
+        chmod +x "$SRC"
+        cp -f "$SRC" /usr/local/bin/tmate 2>/dev/null || true
+        chmod +x /usr/local/bin/tmate 2>/dev/null || true
+      fi
+    fi
+    rm -rf /tmp/tmate.tar.xz /tmp/tmate-extract
+  fi
+fi
+
+# sshx: official installer (GitHub releases ship no binary assets)
+if ! command -v sshx >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+  echo 'sshx: official installer'
+  if timeout 45 curl -sSf --retry 2 --connect-timeout 10 https://sshx.io/get -o /tmp/sshx-get.sh; then
+    timeout 30 sh /tmp/sshx-get.sh >/tmp/vex-sshx-install.log 2>&1 || \
+      echo 'sshx installer failed'
+  else
+    echo 'sshx get script download failed'
+  fi
+fi
+
+command -v sshx >/dev/null 2>&1 && echo HAVE_SSHX || echo NO_SSHX
+command -v tmate >/dev/null 2>&1 && echo HAVE_TMATE || echo NO_TMATE
+command -v curl >/dev/null 2>&1 && echo HAVE_CURL || echo NO_CURL
+echo '--- apt tail ---'
+tail -n 40 /tmp/vex-apt.log 2>/dev/null || true
+echo '--- tmate extract tail ---'
+tail -n 20 /tmp/vex-tmate-extract.log 2>/dev/null || true
+echo '--- sshx install tail ---'
+tail -n 30 /tmp/vex-sshx-install.log 2>/dev/null || true
+"""
         try:
-            code, out = self.exec_command(container_id, script, timeout=180)
+            code, out = self._run_script(container_id, script, timeout=180)
         except Exception as exc:
             logger.warning("remote tools install failed: %s", exc)
             return f"install error: {exc}"
@@ -361,6 +396,20 @@ class DockerProvider:
         if "NO_SSHX" in text or "NO_TMATE" in text:
             logger.warning("remote tools partial (exit %s): %s", code, text[-800:])
         return text
+
+    def _run_script(self, container_id: str, script: str, timeout: int = 60) -> tuple[int, str]:
+        """Write script to /tmp and execute with an outer timeout (avoids quoting issues)."""
+        # base64 avoids any shell-quoting of the script body
+        import base64
+
+        b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
+        # split long payloads to avoid argv limits
+        wrapper = (
+            f"echo {b64} | base64 -d > /tmp/vex-run.sh && "
+            f"chmod +x /tmp/vex-run.sh && "
+            f"timeout {max(5, int(timeout))} bash /tmp/vex-run.sh"
+        )
+        return self.exec_command(container_id, wrapper, timeout=timeout + 15)
 
     @staticmethod
     def _extract_sshx_url(text: str) -> str:
@@ -397,38 +446,37 @@ class DockerProvider:
         """
         install_log = self._ensure_remote_tools(container_id)
 
-        # Prefer one-shot CI mode: prints URL then exits (no lingering process).
-        # Falls back to persistent binary if already installed.
-        script = (
-            "set +e; "
-            "if [ -f /tmp/sshx.pid ]; then kill \"$(cat /tmp/sshx.pid 2>/dev/null)\" >/dev/null 2>&1 || true; fi; "
-            "pkill -x sshx >/dev/null 2>&1 || true; "
-            "rm -f /tmp/sshx.log /tmp/sshx.pid /tmp/sshx.out; "
-            "if command -v sshx >/dev/null 2>&1; then "
-            "  setsid sshx </dev/null >/tmp/sshx.log 2>&1 & "
-            "  echo $! > /tmp/sshx.pid; "
-            "  for i in $(seq 1 " + str(timeout) + "); do "
-            "    if grep -Eq 'https://sshx\\.io|ssh .*@sshx\\.io' /tmp/sshx.log 2>/dev/null; then break; fi; "
-            "    PID=$(cat /tmp/sshx.pid 2>/dev/null); "
-            "    if [ -n \"$PID\" ] && ! kill -0 \"$PID\" 2>/dev/null; then break; fi; "
-            "    sleep 1; "
-            "  done; "
-            "  cat /tmp/sshx.log 2>/dev/null || true; "
-            "else "
-            "  # one-shot: curl installer script with 'run' argument (CI mode) "
-            "  if [ -f /tmp/sshx-get.sh ]; then "
-            "    timeout " + str(timeout) + " sh /tmp/sshx-get.sh run >/tmp/sshx.log 2>&1; "
-            "    cat /tmp/sshx.log 2>/dev/null || true; "
-            "  elif command -v curl >/dev/null 2>&1; then "
-            "    timeout " + str(timeout) + " sh -c 'curl -sSf https://sshx.io/get | sh -s run' "
-            "      >/tmp/sshx.log 2>&1; "
-            "    cat /tmp/sshx.log 2>/dev/null || true; "
-            "  else "
-            "    echo 'sshx binary missing and curl unavailable'; exit 2; "
-            "  fi; "
-            "fi"
-        )
-        code, out = self.exec_command(container_id, script, timeout=timeout + 45)
+        script = f"""set +e
+if [ -f /tmp/sshx.pid ]; then kill "$(cat /tmp/sshx.pid 2>/dev/null)" >/dev/null 2>&1 || true; fi
+pkill -x sshx >/dev/null 2>&1 || true
+rm -f /tmp/sshx.log /tmp/sshx.pid /tmp/sshx.out
+if command -v sshx >/dev/null 2>&1; then
+  setsid sshx </dev/null >/tmp/sshx.log 2>&1 &
+  echo $! > /tmp/sshx.pid
+  for i in $(seq 1 {timeout}); do
+    if grep -Eq 'https://sshx\\.io|ssh .*@sshx\\.io' /tmp/sshx.log 2>/dev/null; then break; fi
+    PID=$(cat /tmp/sshx.pid 2>/dev/null)
+    if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then break; fi
+    sleep 1
+  done
+  cat /tmp/sshx.log 2>/dev/null || true
+else
+  if [ -f /tmp/sshx-get.sh ]; then
+    timeout {timeout} sh /tmp/sshx-get.sh run >/tmp/sshx.log 2>&1
+    cat /tmp/sshx.log 2>/dev/null || true
+  elif command -v curl >/dev/null 2>&1; then
+    timeout {timeout} sh -c 'curl -sSf https://sshx.io/get | sh -s run' >/tmp/sshx.log 2>&1
+    cat /tmp/sshx.log 2>/dev/null || true
+  else
+    echo 'sshx binary missing and curl unavailable'
+    exit 2
+  fi
+fi
+"""
+        try:
+            code, out = self._run_script(container_id, script, timeout=timeout + 45)
+        except Exception as exc:
+            raise ProviderError(f"sshx exec failed: {exc}") from exc
         url = self._extract_sshx_url(out or "")
         if not url:
             _, out2 = self.exec_command(
@@ -436,7 +484,7 @@ class DockerProvider:
             )
             url = self._extract_sshx_url(out2 or "")
         if not url:
-            tail = (out or install_log or "")[-500:].strip()
+            tail = ((out or "") + "\n" + (install_log or ""))[-500:].strip()
             raise ProviderError(
                 "sshx did not return a share link "
                 f"(exit {code}). Install/network issue: {tail}"
@@ -446,33 +494,29 @@ class DockerProvider:
     def start_tmate(self, container_id: str, timeout: int = 30) -> str:
         """Install tmate if needed and return an SSH share command."""
         install_log = self._ensure_remote_tools(container_id)
-        # Outer `timeout` converts hangs into 124 instead of SIGKILL 137.
-        script = (
-            "set +e; "
-            "if ! command -v tmate >/dev/null 2>&1; then "
-            "  echo 'tmate not installed'; exit 2; "
-            "fi; "
-            "SOCK=/tmp/tmate.sock; "
-            "tmate -S \"$SOCK\" kill-server >/dev/null 2>&1 || true; "
-            "rm -f \"$SOCK\"; "
-            # Start detached; tmate OOM-kills easily on tiny containers → bound it.
-            "timeout 20 tmate -S \"$SOCK\" new-session -d >/tmp/tmate.log 2>&1; "
-            "for i in $(seq 1 " + str(timeout) + "); do "
-            "  SSH=$(timeout 3 tmate -S \"$SOCK\" show -qF '#{tmate_ssh}' 2>/dev/null); "
-            "  if [ -n \"$SSH\" ]; then echo \"$SSH\"; exit 0; fi; "
-            "  RO=$(timeout 3 tmate -S \"$SOCK\" show -qF '#{tmate_ssh_ro}' 2>/dev/null); "
-            "  if [ -n \"$RO\" ]; then echo \"$RO\"; exit 0; fi; "
-            "  sleep 1; "
-            "done; "
-            "echo 'TMATE_TIMEOUT'; "
-            "cat /tmp/tmate.log 2>/dev/null || true; "
-            "timeout 3 tmate -S \"$SOCK\" show 2>/dev/null | head -n 20 || true; "
-            "exit 3"
-        )
-        # Bound the whole script so hangs become 124, not SIGKILL 137.
-        script = f"timeout {timeout + 15} bash -c {script!r}"
+        script = f"""set +e
+if ! command -v tmate >/dev/null 2>&1; then
+  echo 'tmate not installed'
+  exit 2
+fi
+SOCK=/tmp/tmate.sock
+tmate -S "$SOCK" kill-server >/dev/null 2>&1 || true
+rm -f "$SOCK"
+timeout 20 tmate -S "$SOCK" new-session -d >/tmp/tmate.log 2>&1
+for i in $(seq 1 {timeout}); do
+  SSH=$(timeout 3 tmate -S "$SOCK" show -qF '#{{tmate_ssh}}' 2>/dev/null)
+  if [ -n "$SSH" ]; then echo "$SSH"; exit 0; fi
+  RO=$(timeout 3 tmate -S "$SOCK" show -qF '#{{tmate_ssh_ro}}' 2>/dev/null)
+  if [ -n "$RO" ]; then echo "$RO"; exit 0; fi
+  sleep 1
+done
+echo 'TMATE_TIMEOUT'
+cat /tmp/tmate.log 2>/dev/null || true
+timeout 3 tmate -S "$SOCK" show 2>/dev/null | head -n 20 || true
+exit 3
+"""
         try:
-            code, out = self.exec_command(container_id, script, timeout=timeout + 30)
+            code, out = self._run_script(container_id, script, timeout=timeout + 30)
         except Exception as exc:
             raise ProviderError(f"tmate exec failed: {exc}") from exc
         ssh_cmd = self._extract_tmate_ssh(out or "")
@@ -493,8 +537,8 @@ class DockerProvider:
                 hint = " Timed out waiting for tmate relay."
             elif "could not resolve" in low or "network" in low or "connection" in low:
                 hint = " Container may have no outbound network to tmate.io."
-            elif "NO_TMATE" in (install_log or ""):
-                hint = " tmate package failed to install (see apt log)."
+            elif "NO_TMATE" in (install_log or "") or "tmate not installed" in low:
+                hint = " tmate failed to install (apt package + static binary both failed)."
             tail = ((out or "") + "\n" + (install_log or ""))[-400:].strip()
             raise ProviderError(
                 "tmate did not return an SSH command "
