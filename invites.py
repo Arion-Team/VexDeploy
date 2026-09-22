@@ -1,179 +1,171 @@
+"""Invite tracking for VexDeploy."""
+
+from __future__ import annotations
+
 import logging
-import datetime
+from typing import TYPE_CHECKING, Optional
+
 import discord
 
-logger = logging.getLogger('LexoNodesBot')
+if TYPE_CHECKING:
+    from bot import VexBot
+
+logger = logging.getLogger("vexdeploy.invites")
 
 
 class InviteTracker:
-    """Tracks guild invites and attributes joins to inviters safely."""
+    """Tracks which invite a member used and awards inviter credits."""
 
-    def __init__(self, db):
-        self.db = db
-        self._cache = {}
+    def __init__(self, bot: "VexBot") -> None:
+        self.bot = bot
+        self._cache: dict[int, dict[str, int]] = {}
 
-    async def prime_guild(self, guild):
+    async def prime_guild(self, guild: discord.Guild) -> None:
         try:
             invites = await guild.invites()
-            self._cache[guild.id] = {i.code: (i.uses or 0) for i in invites}
-            return True
-        except Exception as e:
-            logger.warning(f"Could not cache invites for guild {guild.id}: {e}")
-            self._cache[guild.id] = None
+            self._cache[guild.id] = {i.code: i.uses or 0 for i in invites}
+        except discord.Forbidden:
+            logger.warning(
+                "Missing Manage Guild on %s — invite cache not primed", guild.id
+            )
+            self._cache.setdefault(guild.id, {})
+
+    async def prime_all(self) -> None:
+        for guild in self.bot.guilds:
+            await self.prime_guild(guild)
+
+    async def handle_member_join(self, member: discord.Member) -> bool:
+        """Attribute join and update inviter counts. Returns True if credited."""
+        guild = member.guild
+        cached = self._cache.get(guild.id)
+        if cached is None:
+            await self.prime_guild(guild)
+            cached = self._cache.get(guild.id, {})
+
+        try:
+            current_invites = await guild.invites()
+            current = {i.code: i.uses or 0 for i in current_invites}
+        except discord.Forbidden:
+            logger.warning("Cannot read invites in guild %s", guild.id)
             return False
 
-    async def prime_all(self, bot):
-        for guild in bot.guilds:
-            await self.prime_guild(guild)
+        inviter_id: Optional[str] = None
+        invite_code: Optional[str] = None
+        ambiguous = False
 
-    async def handle_member_join(self, member):
-        """Detect which invite was used and credit the inviter.
+        for code, uses in current.items():
+            old = cached.get(code, -1)
+            if old >= 0 and uses > old:
+                if inviter_id is not None:
+                    ambiguous = True
+                invite = next((i for i in current_invites if i.code == code), None)
+                if invite and invite.inviter:
+                    inviter_id = str(invite.inviter.id)
+                    invite_code = code
 
-        Returns inviter_id (str) if an invite was counted, else None.
-        Never awards an invite when attribution is ambiguous or unknown.
-        """
-        if self.db.is_member_invite_tracked(member.id):
-            logger.info(f"Invite join already recorded for member {member.id}, skipping duplicate")
-            return None
+        vanished = [c for c in cached if c not in current]
+        if vanished and not inviter_id:
+            ambiguous = True
 
-        guild = member.guild
-        try:
-            current = await guild.invites()
-        except Exception as e:
-            logger.warning(f"Could not fetch invites on join in guild {guild.id}: {e}")
-            current = None
+        self._cache[guild.id] = current
 
-        old = self._cache.get(guild.id)
-        if current is None:
-            await self.prime_guild(guild)
-            return None
+        if ambiguous or inviter_id is None:
+            self.bot.db.record_join_event(
+                member_id=str(member.id),
+                guild_id=str(guild.id),
+                inviter_id=None,
+                invite_code=invite_code,
+                is_fake=True,
+            )
+            logger.info(
+                "Join by %s ambiguous or unknown inviter — not credited", member.id
+            )
+            return False
 
-        current_map = {i.code: i for i in current}
-        old_map = old or {}
+        if inviter_id == str(member.id):
+            return False
 
-        increased = []
-        for code, inv in current_map.items():
-            prev_uses = old_map.get(code)
-            if prev_uses is None:
-                continue
-            if (inv.uses or 0) > prev_uses:
-                increased.append(inv)
-
-        # Detect entirely new invite codes (possible first-time creation race):
-        # only trust increases on known codes; unknown codes are not awarded.
-        inviter_id = None
-        used_code = None
-
-        if len(increased) == 1:
-            inv = increased[0]
-            if inv.inviter is not None:
-                inviter_id = str(inv.inviter.id)
-                used_code = inv.code
-            else:
-                logger.info(f"Invite {inv.code} used but inviter unknown (vanity/unknown); not awarding")
-        elif len(increased) == 0 and not old_map:
-            # No usable baseline yet — record the join without awarding
-            logger.info(f"No invite baseline for guild {guild.id}; join recorded without awarding")
-        elif len(increased) > 1:
-            # Ambiguous — do not guess
-            logger.warning(f"Ambiguous invite increase in guild {guild.id}; not awarding")
-        elif old is None:
-            logger.info(f"Invite cache missing for guild {guild.id}; join recorded without awarding")
-
-        self.db.record_invite_join(
+        new_credit = self.bot.db.record_join_event(
             member_id=str(member.id),
             guild_id=str(guild.id),
-            invite_code=used_code or '',
-            inviter_id=inviter_id or '',
-            counted=1 if inviter_id else 0,
+            inviter_id=inviter_id,
+            invite_code=invite_code,
+            is_fake=False,
         )
-        self._cache[guild.id] = {c: (i.uses or 0) for c, i in current_map.items()}
+        if new_credit:
+            self.bot.db.recompute_eligibility(inviter_id)
+            await self._maybe_notify_completion(member.guild, inviter_id)
+            logger.info(
+                "Invite detected: %s invited by %s", member.id, inviter_id
+            )
+            return True
+        return False
 
-        if not inviter_id:
-            return None
+    async def handle_member_remove(self, member: discord.Member) -> None:
+        inviter_id = self.bot.db.record_leave(str(member.id))
+        if inviter_id:
+            self.bot.db.recompute_eligibility(inviter_id)
+            logger.info(
+                "Member %s left — revoked invite from %s", member.id, inviter_id
+            )
+        await self.prime_guild(member.guild)
 
-        previous_valid = self.db.get_valid_invites(inviter_id)
-        self.db.add_invites(inviter_id, 1)
-        new_valid = previous_valid + 1
+    async def _maybe_notify_completion(
+        self, guild: discord.Guild, inviter_id: str
+    ) -> None:
+        if not self.bot.db.recompute_eligibility(inviter_id):
+            return
+        row = self.bot.db.get_invite_row(inviter_id)
+        if not row or row["completion_notified"]:
+            return
+        self.bot.db.set_completion_notified(inviter_id, True)
+        required = int(self.bot.db.get_setting("required_invites", 5))
+        brand = self.bot.db.get_active_branding() or {}
+        brand_name = brand.get("brand_name", "VexDeploy")
 
-        inviter_name = str(getattr(inv.inviter, 'display_name', '') or getattr(inv.inviter, 'name', '')) if inviter_id else ''
-        if not inviter_name:
+        user: Optional[discord.abc.User] = guild.get_member(int(inviter_id))
+        if user is None:
             try:
-                user = await member.guild.fetch_member(int(inviter_id))
-                inviter_name = user.display_name
-            except Exception:
-                inviter_name = inviter_id
+                user = await self.bot.fetch_user(int(inviter_id))
+            except discord.HTTPException:
+                user = None
 
-        self.db.update_username(inviter_id, inviter_name)
-        logger.info(
-            f"Invite detected: {inviter_name} ({inviter_id}) invited {member} "
-            f"in guild {guild.id} via {used_code}; valid={new_valid}"
+        embed = discord.Embed(
+            title=f"Invite goal reached — {brand_name}",
+            description=(
+                f"You have **{row['valid_invites']}** valid invites "
+                f"(required **{required}**).\n\n"
+                f"You can now create a VPS with `/createvps`."
+            ),
+            color=discord.Color.green(),
         )
-        return inviter_id
+        embed.set_footer(text=brand.get("footer") or brand_name)
 
-    async def handle_member_leave(self, member):
-        """Invalidate a tracked invite when the joined member leaves."""
-        event = self.db.get_invite_event(member.id)
-        if not event or not event.get('inviter_id') or not event.get('counted'):
-            return None
+        if user is not None:
+            try:
+                await user.send(embed=embed)
+            except discord.HTTPException:
+                logger.info("Could not DM completion to %s", inviter_id)
 
-        self.db.invalidate_invite_event(member.id)
-        inviter_id = event['inviter_id']
-        self.db.register_fake_invite(inviter_id)
-        logger.info(
-            f"Invite invalidated: member {member.id} left; inviter {inviter_id} marked fake/invalid"
-        )
-        return inviter_id
-
-    async def notify_completion(self, bot, user_id, valid, required):
-        """Send one-time DM + optional channel notification when goal reached."""
-        already = self.db.get_completion_notified(user_id)
-        if already:
-            return False
-
-        self.db.set_completion_notified(user_id, 1)
-        self.db.set_eligible(user_id, 1)
-
-        try:
-            user = await bot.fetch_user(int(user_id))
-        except Exception as e:
-            logger.warning(f"Could not fetch user {user_id} for completion DM: {e}")
-            return False
-
-        dm_text = (
-            "🎉 Invite Requirement Completed!\n\n"
-            "Congratulations! You have completed the required\n"
-            "invite goal.\n\n"
-            f"Required Invites: {required}\n"
-            f"Your Invites: {valid}\n\n"
-            "You can now create your VPS.\n\n"
-            "Use:\n/createvps"
-        )
-        try:
-            await user.send(dm_text)
-            logger.info(f"Invite requirement completed: DM sent to {user_id}")
-        except discord.Forbidden:
-            logger.warning(f"Could not DM user {user_id} (DMs disabled)")
-        except Exception as e:
-            logger.warning(f"Failed to DM completion to {user_id}: {e}")
-
-        channel_id = bot.db.get_setting('completion_channel_id', 0)
+        channel_id = int(self.bot.db.get_setting("completion_channel_id", 0) or 0)
         if channel_id:
-            channel = bot.get_channel(int(channel_id))
-            if channel:
+            channel = guild.get_channel(channel_id) or self.bot.get_channel(channel_id)
+            if isinstance(channel, discord.TextChannel):
                 try:
-                    embed = discord.Embed(title="🎉 VPS Requirement Completed", color=discord.Color.gold())
-                    embed.add_field(name="User", value=f"<@{user_id}>", inline=True)
-                    embed.add_field(name="Invites", value=f"{valid}/{required}", inline=True)
-                    embed.add_field(name="Status", value="Eligible", inline=True)
-                    embed.add_field(name="Note", value="The user can now create a VPS.", inline=False)
-                    await channel.send(embed=embed)
-                    logger.info(f"Invite completion notification sent to channel {channel_id}")
-                except Exception as e:
-                    logger.warning(f"Could not send completion channel message: {e}")
-        return True
+                    e = embed.copy()
+                    e.description = f"<@{inviter_id}> " + (embed.description or "")
+                    await channel.send(embed=e)
+                except discord.HTTPException:
+                    pass
 
-
-def eligibility_status(valid, required):
-    eligible = valid >= required
-    return eligible, ("✅ Eligible" if eligible else "❌ Not Eligible")
+    def eligibility_status(self, user_id: str) -> dict:
+        required = int(self.bot.db.get_setting("required_invites", 5))
+        row = self.bot.db.get_invite_row(user_id)
+        valid = int(row["valid_invites"]) if row else 0
+        return {
+            "valid": valid,
+            "required": required,
+            "eligible": valid >= required,
+            "remaining": max(0, required - valid),
+            "completion_notified": bool(row["completion_notified"]) if row else False,
+        }

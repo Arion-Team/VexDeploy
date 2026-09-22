@@ -1,322 +1,333 @@
+"""MOTD script generation and installation for VexDeploy."""
+
+from __future__ import annotations
+
 import base64
 import logging
-from config import ANSI_COLORS
+import secrets
+from pathlib import Path
+from typing import Any
 
-logger = logging.getLogger('LexoNodesBot')
+logger = logging.getLogger("vexdeploy.motd")
 
-DYNAMIC_SHELL = {
-    'hostname': r"$(hostname 2>/dev/null || echo unknown)",
-    'os': r"$(. /etc/os-release 2>/dev/null && echo \"$PRETTY_NAME\" || uname -s)",
-    'kernel': r"$(uname -r 2>/dev/null || echo unknown)",
-    'uptime': r"$(uptime -p 2>/dev/null | sed 's/^up //' || awk '{printf \"%d days\", int($1/86400)}' /proc/uptime)",
-    'cpu': r"$(cpu_usage 2>/dev/null || echo 0)%",
-    'ram_used': r"$(awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{if(t) print int((t-a)/1024)}' /proc/meminfo 2>/dev/null || echo 0)MB",
-    'ram_total': r"$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)MB",
-    'ram_percent': r"$(awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{if(t) printf \"%d\", (t-a)*100/t; else printf \"0\"}' /proc/meminfo 2>/dev/null || echo 0)%",
-    'disk': r"$(df -P / 2>/dev/null | awk 'NR==2{print $3\" / \"$2\" (\"$5\")\"}')",
-    'ip': r"$(hostname -I 2>/dev/null | awk '{print $1}' || echo unknown)",
-    'users': r"$(who 2>/dev/null | wc -l | tr -d ' ')",
-    'processes': r"$(ps -e --no-headers 2>/dev/null | wc -l | tr -d ' ')",
-}
+_EOF = "VEX_MOTD_EOF"
+_MARKER = "VEXDEPLOY_MOTD"
 
-LITERAL_KEYS = ('brand_name', 'tagline', 'footer', 'website', 'discord', 'support')
+_template_path = Path(__file__).resolve().parent / "templates" / "motd.sh"
 
 
-def _color_code(name, fallback='37'):
-    return ANSI_COLORS.get((name or '').strip().lower(), fallback)
-
-
-def _shell_single_quote(s):
-    return str(s).replace("'", "'\\''")
-
-
-def generate_ascii_logo(brand_name):
-    """Block-style ASCII logo with a clean framed fallback."""
-    name = (brand_name or 'VPS').strip().upper()
-    art = {
-        'A': ['  ##  ', ' #  # ', ' #### ', ' #  # ', ' #  # '],
-        'B': [' ###  ', ' #  # ', ' ###  ', ' #  # ', ' ###  '],
-        'C': [' #### ', ' #    ', ' #    ', ' #    ', ' #### '],
-        'D': [' ###  ', ' #  # ', ' #  # ', ' #  # ', ' ###  '],
-        'E': [' #### ', ' #    ', ' ###  ', ' #    ', ' #### '],
-        'F': [' #### ', ' #    ', ' ###  ', ' #    ', ' #    '],
-        'G': [' #### ', ' #    ', ' # ## ', ' #  # ', ' #### '],
-        'H': [' #  # ', ' #  # ', ' #### ', ' #  # ', ' #  # '],
-        'I': [' ### ', '  #  ', '  #  ', '  #  ', ' ### '],
-        'J': ['   ## ', '    # ', '    # ', '#   # ', ' ###  '],
-        'K': [' #  # ', ' # #  ', ' ##   ', ' # #  ', ' #  # '],
-        'L': [' #    ', ' #    ', ' #    ', ' #    ', ' #### '],
-        'M': [' #   # ', ' ## ## ', ' # # # ', ' #   # ', ' #   # '],
-        'N': [' #   # ', ' ##  # ', ' # # # ', ' #  ## ', ' #   # '],
-        'O': [' ###  ', ' #  # ', ' #  # ', ' #  # ', ' ###  '],
-        'P': [' ###  ', ' #  # ', ' ###  ', ' #    ', ' #    '],
-        'Q': [' ###  ', ' #  # ', ' #  # ', ' # ## ', ' ### #'],
-        'R': [' ###  ', ' #  # ', ' ###  ', ' # #  ', ' #  # '],
-        'S': [' #### ', ' #    ', ' ###  ', '    # ', ' #### '],
-        'T': ['##### ', '  #   ', '  #   ', '  #   ', '  #   '],
-        'U': [' #  # ', ' #  # ', ' #  # ', ' #  # ', ' ###  '],
-        'V': [' #   # ', ' #   # ', '  # #  ', '  # #  ', '   #   '],
-        'W': [' #   # ', ' #   # ', ' # # # ', ' ## ## ', ' #   # '],
-        'X': [' #   # ', '  # #  ', '   #   ', '  # #  ', ' #   # '],
-        'Y': [' #   # ', '  # #  ', '   #   ', '   #   ', '   #   '],
-        'Z': [' #### ', '    # ', '   #  ', '  #   ', ' #### '],
-        '0': [' ###  ', ' #  # ', ' #  # ', ' #  # ', ' ###  '],
-        '1': ['  #  ', ' ##  ', '  #  ', '  #  ', ' ### '],
-        '2': [' ###  ', '    # ', ' ###  ', ' #    ', ' #### '],
-        '3': [' ###  ', '    # ', '  ##  ', '    # ', ' ###  '],
-        '4': [' #  # ', ' #  # ', ' #### ', '    # ', '    # '],
-        '5': [' #### ', ' #    ', ' ###  ', '    # ', ' ###  '],
-        '6': [' ###  ', ' #    ', ' ###  ', ' #  # ', ' ###  '],
-        '7': [' #### ', '    # ', '   #  ', '  #   ', '  #   '],
-        '8': [' ###  ', ' #  # ', ' ###  ', ' #  # ', ' ###  '],
-        '9': [' ###  ', ' #  # ', ' #### ', '    # ', ' ###  '],
-        ' ': ['   ', '   ', '   ', '   ', '   '],
-        '-': ['   ', '   ', ' ### ', '   ', '   '],
-        '.': ['   ', '   ', '   ', '   ', '  # '],
-        '_': ['     ', '     ', '     ', '     ', '#####'],
+def generate_ascii_logo(text: str, width: int = 56) -> str:
+    text = (text or "").strip() or "VexDeploy"
+    font = {
+        "A": ["  #  ", " # # ", "#####", "#   #", "#   #"],
+        "B": ["#### ", "#   #", "#### ", "#   #", "#### "],
+        "C": [" ####", "#    ", "#    ", "#    ", " ####"],
+        "D": ["#### ", "#   #", "#   #", "#   #", "#### "],
+        "E": ["#####", "#    ", "#### ", "#    ", "#####"],
+        "F": ["#####", "#    ", "#### ", "#    ", "#    "],
+        "G": [" ####", "#    ", "#  ##", "#   #", " ####"],
+        "H": ["#   #", "#   #", "#####", "#   #", "#   #"],
+        "I": ["#####", "  #  ", "  #  ", "  #  ", "#####"],
+        "J": ["    #", "    #", "    #", "#   #", " ####"],
+        "K": ["#   #", "#  # ", "###  ", "#  # ", "#   #"],
+        "L": ["#    ", "#    ", "#    ", "#    ", "#####"],
+        "M": ["#   #", "## ##", "# # #", "#   #", "#   #"],
+        "N": ["#   #", "##  #", "# # #", "#  ##", "#   #"],
+        "O": [" ### ", "#   #", "#   #", "#   #", " ### "],
+        "P": ["#### ", "#   #", "#### ", "#    ", "#    "],
+        "Q": [" ### ", "#   #", "# # #", "#  # ", " ## #"],
+        "R": ["#### ", "#   #", "#### ", "#  # ", "#   #"],
+        "S": [" ####", "#    ", " ### ", "    #", "#### "],
+        "T": ["#####", "  #  ", "  #  ", "  #  ", "  #  "],
+        "U": ["#   #", "#   #", "#   #", "#   #", " ### "],
+        "V": ["#   #", "#   #", "#   #", " # # ", "  #  "],
+        "W": ["#   #", "#   #", "# # #", "## ##", "#   #"],
+        "X": ["#   #", " # # ", "  #  ", " # # ", "#   #"],
+        "Y": ["#   #", " # # ", "  #  ", "  #  ", "  #  "],
+        "Z": ["#####", "   # ", "  #  ", " #   ", "#####"],
+        "0": [" ### ", "#  ##", "# # #", "##  #", " ### "],
+        "1": ["  #  ", " ##  ", "  #  ", "  #  ", " ### "],
+        "2": [" ### ", "#   #", "   # ", "  #  ", "#####"],
+        "3": ["#### ", "    #", " ### ", "    #", "#### "],
+        "4": ["#  # ", "#  # ", "#####", "   # ", "   # "],
+        "5": ["#####", "#    ", "#### ", "    #", "#### "],
+        "6": [" ### ", "#    ", "#### ", "#   #", " ### "],
+        "7": ["#####", "    #", "   # ", "  #  ", "  #  "],
+        "8": [" ### ", "#   #", " ### ", "#   #", " ### "],
+        "9": [" ### ", "#   #", " ####", "    #", " ### "],
+        " ": ["     ", "     ", "     ", "     ", "     "],
+        "-": ["     ", "     ", " ### ", "     ", "     "],
+        ".": ["     ", "     ", "     ", "     ", "  #  "],
     }
 
-    if not name:
-        name = 'VPS'
+    max_chars = max(1, min(len(text), (width - 4) // 6))
+    sample = text.upper()[:max_chars]
 
-    rows = ['', '', '', '', '']
-    for ch in name:
-        glyph = art.get(ch)
-        if not glyph:
-            width = max(len(name) + 4, 34)
-            bar = '━' * width
-            return f"{bar}\n        {name}\n{bar}"
+    rows = [""] * 5
+    for ch in sample:
+        glyph = font.get(ch, font[" "])
         for i in range(5):
-            rows[i] += glyph[i] + ' '
-    return '\n'.join(rows).rstrip()
+            rows[i] += glyph[i] + " "
+
+    if not any(r.strip() for r in rows):
+        return framed(text, width)
+
+    out = ["  " + r.rstrip() for r in rows]
+    return "\n".join(out)
 
 
-def _literals(brand):
-    return {
-        'brand_name': brand.get('brand_name', ''),
-        'tagline': brand.get('brand_tagline', ''),
-        'footer': brand.get('footer') or brand.get('brand_tagline', ''),
-        'website': brand.get('website', ''),
-        'discord': brand.get('discord', ''),
-        'support': brand.get('support_email', ''),
-    }
+def framed(text: str, width: int = 56) -> str:
+    text = (text or "").strip() or "VexDeploy"
+    inner = width - 4
+    if len(text) > inner:
+        text = text[:inner]
+    pad = inner - len(text)
+    left = pad // 2
+    right = pad - left
+    return (
+        "+" + "-" * (width - 2) + "+\n"
+        "| " + " " * left + text + " " * right + " |\n"
+        "+" + "-" * (width - 2) + "+"
+    )
 
 
-def _default_motd_body(brand):
-    name = brand.get('brand_name', 'VPS')
-    tagline = brand.get('brand_tagline') or 'High Performance • Secure • Reliable Infrastructure'
-    footer = brand.get('footer') or tagline
-    return f"""
-$p_line
-${{bold}}${{p_color}}\U0001f680 Welcome to {name}${{reset}}
-{tagline}
-${{p_color}}$p_line${{reset}}
+def _ansi(code: str) -> str:
+    return f"\\033[{code}m"
 
-Hostname:          ${{hostname}}
-OS:                ${{os}}
-Kernel:            ${{kernel}}
-Uptime:            ${{uptime}}
-CPU Usage:         ${{cpu}}
-Memory:            ${{ram_used}} / ${{ram_total}} (${{ram_percent}})
-Disk:              ${{disk}}
-Processes:         ${{processes}}
-Users:             ${{users}}
-IP:                ${{ip}}
 
-${{p_color}}$p_line${{reset}}
+def build_motd_script(brand: dict[str, Any]) -> str:
+    name = str(brand.get("brand_name") or "VexDeploy")
+    tagline = str(brand.get("brand_tagline") or "")
+    footer = str(brand.get("footer") or "")
+    website = str(brand.get("website") or "")
+    discord_url = str(brand.get("discord") or "")
+    support = str(brand.get("support_email") or "")
+    logo = str(brand.get("logo") or "AUTO")
+    template = str(brand.get("motd_template") or "").strip()
 
-Support:           ${{support}}
-Discord:           ${{discord}}
-Website:           ${{website}}
+    from config import ANSI_COLORS
 
-${{p_color}}${{bold}}{name} — {footer} 💎${{reset}}
+    p = ANSI_COLORS.get(str(brand.get("primary_color", "cyan")), "0;36")
+    s = ANSI_COLORS.get(str(brand.get("secondary_color", "magenta")), "0;35")
+
+    if logo.upper() in {"NONE", "OFF"}:
+        logo_block = ""
+    elif logo.upper() == "AUTO" or not logo:
+        logo_block = generate_ascii_logo(name)
+    else:
+        logo_block = logo
+
+    if template:
+        return _script_from_template(brand, template, p, s)
+
+    footer_line = footer or (f"Need help? {support}" if support else "")
+    links = " | ".join(x for x in (website, discord_url, support) if x)
+
+    logo_export = ""
+    if logo_block:
+        logo_export = (
+            "cat <<'" + _EOF + "_LOGO'\n" + logo_block + "\n" + _EOF + "_LOGO\n"
+        )
+
+    tagline_echo = (
+        f'echo "${{S}}{tagline}${{R}}"' if tagline else 'echo ""'
+    )
+    links_echo = f'echo "${{S}}{links}${{R}}"' if links else 'echo ""'
+    footer_echo = (
+        f'echo "${{S}}{footer_line}${{R}}"' if footer_line else 'echo ""'
+    )
+    support_echo = (
+        f'echo "${{B}}Support${{R}}  {support}"' if support else 'echo ""'
+    )
+
+    return f"""#!/bin/bash
+# {_MARKER} v1 brand={name}
+P="{_ansi(p)}"
+S="{_ansi(s)}"
+B="\\033[1m"
+R="\\033[0m"
+
+HOST="$(hostname 2>/dev/null || echo vex)"
+if [ -f /etc/os-release ]; then
+  . /etc/os-release
+  OS="${{PRETTY_NAME:-Linux}}"
+else
+  OS="$(uname -s)"
+fi
+KERNEL="$(uname -r)"
+UPTIME_STR="$(uptime -p 2>/dev/null || uptime | sed 's/.*up /up /')"
+CPU="$(nproc 2>/dev/null || echo 1)"
+MEM_TOTAL="$(free -h 2>/dev/null | awk '/Mem:/{{print $2}}')"
+MEM_USED="$(free -h 2>/dev/null | awk '/Mem:/{{print $3}}')"
+MEM_PCT="$(free | awk '/Mem:/{{printf "%.0f", $3/$2*100}}' 2>/dev/null || echo 0)"
+DISK="$(df -h / 2>/dev/null | awk 'NR==2{{print $3"/"$2" ("$5)"}}')"
+IP="$(hostname -I 2>/dev/null | awk '{{print $1}}')"
+LOAD="$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || echo n/a)"
+USERS="$(who 2>/dev/null | wc -l)"
+PROCS="$(ps -e --no-headers 2>/dev/null | wc -l)"
+
+echo ""
+{logo_export}
+echo "${{P}}${{B}}{name}${{R}}"
+{tagline_echo}
+echo "${{P}}----------------------------------------------${{R}}"
+echo "${{B}} Host${{R}}     $HOST"
+echo "${{B}} OS${{R}}       $OS"
+echo "${{B}} Kernel${{R}}   $KERNEL"
+echo "${{B}} Uptime${{R}}   $UPTIME_STR"
+echo "${{B}} CPU${{R}}      $CPU core(s)  load $LOAD"
+echo "${{B}} Memory${{R}}   $MEM_USED/$MEM_TOTAL ($MEM_PCT%)"
+echo "${{B}} Disk${{R}}     $DISK"
+echo "${{B}} Processes${{R}} $PROCS"
+echo "${{B}} Users${{R}}    $USERS online"
+echo "${{B}} IP${{R}}       $IP"
+echo "${{P}}----------------------------------------------${{R}}"
+{links_echo}
+{footer_echo}
+{support_echo}
+echo ""
 """
 
 
-def _render_custom_template(template, brand):
-    out = template
-    literals = _literals(brand)
-    for key, val in literals.items():
-        out = out.replace('{' + key + '}', str(val))
-    for key, snippet in DYNAMIC_SHELL.items():
-        if key in literals:
-            continue
-        if '{' + key + '}' in out:
-            resolved = snippet
-            for lk, lv in literals.items():
-                resolved = resolved.replace('{' + lk + '}', str(lv))
-            out = out.replace('{' + key + '}', resolved)
-    # Leave any unknown {braces} untouched for visibility in output
-    return out
+def _script_from_template(
+    brand: dict[str, Any], template: str, p_code: str, s_code: str
+) -> str:
+    replacements = {
+        "brand_name": str(brand.get("brand_name", "VexDeploy")),
+        "tagline": str(brand.get("brand_tagline", "")),
+        "footer": str(brand.get("footer", "")),
+        "website": str(brand.get("website", "")),
+        "discord": str(brand.get("discord", "")),
+        "support": str(brand.get("support_email", "")),
+        "hostname": "$(hostname)",
+        "os": '$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || uname -s)',
+        "kernel": "$(uname -r)",
+        "uptime": "$(uptime -p 2>/dev/null || uptime)",
+        "cpu": "$(nproc 2>/dev/null || echo 1)",
+        "ram_used": "$(free -h 2>/dev/null | awk '/Mem:/ {print $3}')",
+        "ram_total": "$(free -h 2>/dev/null | awk '/Mem:/ {print $2}')",
+        "ram_percent": "$(free 2>/dev/null | awk '/Mem:/ {printf \"%d\", $3/$2*100}')",
+        "disk": "$(df -h / 2>/dev/null | awk 'NR==2 {print $3\"/\"$2\" (\"$5)\")}')",
+        "ip": "$(hostname -I 2>/dev/null | awk '{print $1}')",
+        "users": "$(who 2>/dev/null | wc -l)",
+        "processes": "$(ps -e --no-headers 2>/dev/null | wc -l)",
+    }
+
+    body = template
+    for key, expr in replacements.items():
+        body = body.replace("{" + key + "}", expr)
+
+    return f"""#!/bin/bash
+# {_MARKER} v1 template brand={brand.get('brand_name')}
+P="{_ansi(p_code)}"
+S="{_ansi(s_code)}"
+B="\\033[1m"
+R="\\033[0m"
+echo ""
+echo "${{P}}{name_echo(brand)}${{R}}"
+{f'echo "${{S}}{brand.get("tagline", brand.get("brand_tagline", ""))}${{R}}"' if brand.get("brand_tagline") else ''}
+cat <<'{_EOF}'
+{body}
+{_EOF}
+echo "${{S}}{str(brand.get("footer") or "")}${{R}}"
+echo ""
+"""
 
 
-def build_motd_script(brand):
-    """Build the MOTD shell script for a brand profile."""
-    try:
-        with open('templates/motd.sh', 'r', encoding='utf-8') as f:
-            base = f.read()
-    except FileNotFoundError:
-        base = (
-            "#!/bin/bash\n"
-            "p_color=$'\\033[{PRIMARY_COLOR}m'\n"
-            "s_color=$'\\033[{SECONDARY_COLOR}m'\n"
-            "reset=$'\\033[0m'\n"
-            "bold=$'\\033[1m'\n"
-            "p_line=\"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\"\n"
-            "cpu_usage() { echo 0; }\n"
-            "{LOGO_BLOCK}\n"
-            "{MOTD_BODY}\n"
-        )
-
-    pcolor = _color_code(brand.get('primary_color'), '35')
-    scolor = _color_code(brand.get('secondary_color'), '36')
-
-    custom_logo = str(brand.get('logo') or 'AUTO').strip()
-    if custom_logo and custom_logo.upper() != 'AUTO':
-        logo = custom_logo
-    else:
-        logo = generate_ascii_logo(brand.get('brand_name', 'VPS'))
-
-    logo_block = (
-        f'while IFS= read -r _l || [ -n "$_l" ]; do '
-        f'printf \'%s\\n\' "${{p_color}}${{_l}}${{reset}}"; '
-        f'done << \'LOGO_EOF\'\n{logo}\nLOGO_EOF'
-    )
-
-    custom_template = (brand.get('motd_template') or '').strip()
-    if custom_template:
-        body = _render_custom_template(custom_template, brand)
-    else:
-        body = _default_motd_body(brand)
-
-    script = base
-    script = script.replace('{PRIMARY_COLOR}', pcolor)
-    script = script.replace('{SECONDARY_COLOR}', scolor)
-    script = script.replace('{LOGO_BLOCK}', logo_block)
-    script = script.replace('{MOTD_BODY}', body)
-
-    if not script.startswith('#!'):
-        script = '#!/bin/bash\n' + script
-    return script
+def name_echo(brand: dict[str, Any]) -> str:
+    return str(brand.get("brand_name") or "VexDeploy")
 
 
-INSTALLER_TEMPLATE = r'''
+def build_installer(brand: dict[str, Any]) -> str:
+    script = build_motd_script(brand)
+    brand_name = str(brand.get("brand_name") or "VexDeploy")
+    return f"""#!/bin/bash
 set -e
-BACKUP_SUFFIX=".backup-brand"
+# {_MARKER} installer brand={brand_name}
 
-# --- Backups (once, idempotent) ---
+# backups (once)
 for f in /etc/pam.d/sshd /etc/pam.d/login /etc/motd; do
-    if [ -f "$f" ] && [ ! -f "${f}${BACKUP_SUFFIX}" ]; then
-        cp -p "$f" "${f}${BACKUP_SUFFIX}" || true
-    fi
+  if [ -f "$f" ] && [ ! -f "$f.backup-brand" ]; then
+    cp -a "$f" "$f.backup-brand"
+  fi
 done
-if [ -d /etc/update-motd.d ] && [ ! -d /etc/update-motd.d.backup-brand ]; then
-    cp -a /etc/update-motd.d /etc/update-motd.d.backup-brand 2>/dev/null || true
+
+# disable default MOTD scripts (once)
+if [ -d /etc/update-motd.d ] && [ ! -d /etc/update-motd.d.disabled ]; then
+  mkdir -p /etc/update-motd.d.disabled
+  find /etc/update-motd.d -maxdepth 1 -type f -exec mv {{}} /etc/update-motd.d.disabled/ \\; 2>/dev/null || true
 fi
 
-# --- Disable default MOTD scripts carefully (idempotent) ---
-mkdir -p /etc/update-motd.d.disabled
-if [ -d /etc/update-motd.d ]; then
-    for f in /etc/update-motd.d/*; do
-        [ -e "$f" ] || continue
-        base=$(basename "$f")
-        [ "$base" = "00-brand-motd" ] && continue
-        if [ ! -e "/etc/update-motd.d.disabled/$base" ]; then
-            mv "$f" "/etc/update-motd.d.disabled/$base" 2>/dev/null || true
-        else
-            rm -f "$f" 2>/dev/null || true
-        fi
-    done
-fi
+# ensure single pam_motd entry
+for pam in /etc/pam.d/sshd /etc/pam.d/login; do
+  [ -f "$pam" ] || continue
+  if ! grep -q "{_MARKER}" "$pam" 2>/dev/null; then
+    if grep -qE '^session\\s+optional\\s+pam_motd\\.so' "$pam"; then
+      sed -i -E '/^session\\s+optional\\s+pam_motd\\.so/d' "$pam"
+    fi
+    echo "session optional pam_motd.so motd_dynamic=/run/motd.dynamic # {_MARKER}" >> "$pam"
+  fi
+done
 
-# Clear static / dynamic MOTD buffers to avoid duplicate output (backed up above)
-: > /etc/motd 2>/dev/null || true
-: > /run/motd.dynamic 2>/dev/null || true
-
-# --- PAM: ensure pam_motd present exactly once (never duplicate) ---
-if [ -f /etc/pam.d/sshd ] && ! grep -qE '^[[:space:]]*session[[:space:]].*pam_motd\.so' /etc/pam.d/sshd; then
-    echo "session optional pam_motd.so" >> /etc/pam.d/sshd
-fi
-if [ -f /etc/pam.d/login ] && ! grep -qE '^[[:space:]]*session[[:space:]].*pam_motd\.so' /etc/pam.d/login; then
-    echo "session optional pam_motd.so" >> /etc/pam.d/login
-fi
-
-# Disable Ubuntu motd-news if present (leave unrelated config intact)
-if command -v systemctl >/dev/null 2>&1; then
-    systemctl disable --now motd-news.timer >/dev/null 2>&1 || true
-    systemctl stop motd-news.service >/dev/null 2>&1 || true
-fi
-
-# --- Install branded MOTD script (overwrite = idempotent) ---
+# write installer script
 mkdir -p /etc/update-motd.d
-chmod 755 /etc/update-motd.d 2>/dev/null || true
-
-cat > /etc/update-motd.d/00-brand-motd << 'BRAND_MOTD_EOF'
-{SCRIPT}
-BRAND_MOTD_EOF
+cat > /etc/update-motd.d/00-brand-motd <<'MOTD_EOF'
+{script}
+MOTD_EOF
 chmod 755 /etc/update-motd.d/00-brand-motd
 
-# Prefill once so SSH shows branding even before first manual run
-/etc/update-motd.d/00-brand-motd > /run/motd.dynamic 2>/dev/null || true
+# prefill dynamic motd
+if mkdir -p /run 2>/dev/null || [ -d /run ]; then
+  /etc/update-motd.d/00-brand-motd > /run/motd.dynamic 2>/dev/null || true
+  chmod 644 /run/motd.dynamic 2>/dev/null || true
+fi
 
-CNT_PAM=$(grep -cE '^[[:space:]]*session[[:space:]].*pam_motd\.so' /etc/pam.d/sshd 2>/dev/null || echo 0)
-CNT_SCRIPT=$(ls /etc/update-motd.d/00-brand-motd 2>/dev/null | wc -l | tr -d ' ')
-echo "MOTD_OK pam=$CNT_PAM scripts=$CNT_SCRIPT"
-'''
+# clear static /etc/motd so PAM dynamic wins
+: > /etc/motd 2>/dev/null || true
 
-
-def build_installer(brand):
-    script = build_motd_script(brand)
-    return INSTALLER_TEMPLATE.replace('{SCRIPT}', script)
-
-
-def encode_installer(brand):
-    return base64.b64encode(build_installer(brand).encode('utf-8')).decode('ascii')
+echo "MOTD_OK pam=ok scripts=ok brand={brand_name}"
+"""
 
 
-async def run_installer(exec_fn, brand):
-    """Run the branded MOTD installer through a provider exec adapter.
-
-    exec_fn(b64_payload) -> (ok, output)
-    Returns (success, message).
-    """
-    if not brand or not int(brand.get('motd_enabled') or 0):
-        return False, "MOTD disabled in branding configuration"
-
-    payload = encode_installer(brand)
-    logger.info("MOTD installation started")
-    try:
-        ok, output = await exec_fn(payload)
-    except Exception as e:
-        logger.error(f"MOTD installation failed: {e}")
-        return False, str(e)
-
-    if ok and 'MOTD_OK' in (output or ''):
-        logger.info("MOTD installation completed")
-        return True, "MOTD installed"
-    logger.error(f"MOTD installation failed: {output}")
-    return False, (output or 'Unknown installer error')[:500]
+def encode_installer(installer: str) -> str:
+    return base64.b64encode(installer.encode("utf-8")).decode("ascii")
 
 
-async def install_branding_files(exec_fn, brand):
-    """Write lightweight branding files inside the VPS."""
-    name = _shell_single_quote(brand.get('brand_name') or 'VPS')
-    website = _shell_single_quote(brand.get('website') or '')
-    tagline = _shell_single_quote(brand.get('brand_tagline') or '')
-    support = _shell_single_quote(brand.get('support_email') or '')
-    discord_url = _shell_single_quote(brand.get('discord') or '')
-    raw = (
-        f"printf 'PRETTY_HOSTNAME=\"%s\"\\n' '{name}' > /etc/machine-info; "
-        f"printf '%s\\n' '{name} | {tagline} | {website}' > /etc/brand-release; "
-        f"printf '%s\\n' 'Support: {support}' 'Discord: {discord_url}' 'Website: {website}' >> /etc/brand-release; "
-        f"echo BRANDING_OK"
+def build_installer_payload(brand: dict[str, Any]) -> str:
+    installer = build_installer(brand)
+    b64 = encode_installer(installer)
+    token = secrets.token_hex(6)
+    path = f"/tmp/.vex-motd-{token}.sh"
+    return (
+        f"echo {b64} | base64 -d > {path} && chmod +x {path} && "
+        f"bash {path}; ec=$?; rm -f {path}; exit $ec"
     )
-    payload = base64.b64encode(raw.encode('utf-8')).decode('ascii')
+
+
+def run_installer(exec_fn, brand: dict[str, Any]) -> tuple[bool, str]:
+    payload = build_installer_payload(brand)
     try:
-        ok, output = await exec_fn(payload)
-    except Exception as e:
-        logger.error(f"Branding file install failed: {e}")
-        return False, str(e)
-    if ok and 'BRANDING_OK' in (output or ''):
-        return True, "Branding files installed"
-    return False, (output or 'Branding install failed')[:500]
+        code, output = exec_fn(payload)
+    except Exception as exc:
+        return False, str(exc)
+    text = (output or "").strip()
+    ok = "MOTD_OK" in text or code == 0
+    return ok, text
+
+
+def install_branding_files(exec_fn, brand: dict[str, Any]) -> tuple[bool, str]:
+    name = str(brand.get("brand_name") or "VexDeploy")
+    website = str(brand.get("website") or "")
+    support = str(brand.get("support_email") or "")
+    content = f"{name}\n{website}\n{support}\n"
+    b64 = base64.b64encode(content.encode()).decode()
+    cmd = (
+        f"mkdir -p /etc/vexdeploy && echo {b64} | base64 -d > /etc/vexdeploy/brand && "
+        f"chmod 644 /etc/vexdeploy/brand && echo BRAND_OK"
+    )
+    try:
+        code, output = exec_fn(cmd)
+    except Exception as exc:
+        return False, str(exc)
+    ok = code == 0 and "BRAND_OK" in (output or "")
+    return ok, (output or "")
