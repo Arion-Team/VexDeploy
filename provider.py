@@ -943,8 +943,16 @@ exit 3
         import re
 
         text = LXDProvider._strip_ansi(text)
-        m = re.search(r"https://[A-Za-z0-9._-]+pinggy\.[A-Za-z]+", text, re.IGNORECASE)
-        return m.group(0).strip().rstrip(".,);'\"") if m else ""
+        # free non-auth: https://….run.pinggy-free.link  |  https://….a.pinggy.link
+        for pat in (
+            r"https://[A-Za-z0-9._-]+\.pinggy[A-Za-z0-9._-]*\.[A-Za-z]+",
+            r"https://[A-Za-z0-9._-]*pinggy[A-Za-z0-9._-]*\.[A-Za-z]+",
+            r"https://\S*pinggy\S*",
+        ):
+            m = re.search(pat, text, re.IGNORECASE)
+            if m:
+                return m.group(0).strip().rstrip(".,);'\"")
+        return ""
 
     def start_file_manager(self, container_id: str, timeout: int = 75) -> dict:
         """Start the in-VPS file manager on localhost and expose it via Pinggy."""

@@ -196,7 +196,8 @@ Started from the dashboard **SSH** button when the container has no public IP:
 From the dashboard **📁 Files** button or `/file_manager <vps_id>`:
 
 - Python stdlib HTTP server on `127.0.0.1:8765` inside the VPS (no public IP needed)
-- Reverse tunnel via free **Pinggy** (`ssh -p 443 … a.pinggy.io`) → HTTPS URL
+- Reverse tunnel via free non-auth **Pinggy** (`ssh -p 443 -R0:127.0.0.1:8765 free.pinggy.io`) → HTTPS URL (`*.pinggy-free.link` / `*.a.pinggy.link`)
+- Temp URL: free plan **~60 min**, new URL each restart (no signup required)
 - Token-protected: open `https://….pinggy…/?token=…` (token sent via DM spoiler)
 - Features: browse, upload (multi-file), download, edit text files, mkdir, delete
 - Stop with `/stop_file_manager <vps_id>` (PID-file kill only — never `pkill -f`)

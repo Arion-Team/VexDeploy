@@ -446,59 +446,76 @@ if __name__ == "__main__":
 
 
 def build_start_script(token: str, port: int = 8765) -> str:
-    """Shell script: install deps, start FM on localhost, expose via Pinggy."""
+    """Official free non-auth Pinggy tunnel: ssh -p 443 -R0:localhost:PORT free.pinggy.io"""
     import base64
 
     fm_b64 = base64.b64encode(FILE_MANAGER_PY.encode("utf-8")).decode("ascii")
-    # no # comments in single-line bash — all comments live in python strings only
-    return (
-        "set +e; "
-        "export DEBIAN_FRONTEND=noninteractive; "
-        "if ! command -v python3 >/dev/null 2>&1; then "
-        "  if command -v apt-get >/dev/null 2>&1; then "
-        "    apt-get update -qq >/dev/null 2>&1 || true; "
-        "    apt-get install -y -qq python3 openssh-client curl ca-certificates >/dev/null 2>&1 || true; "
-        "  elif command -v apk >/dev/null 2>&1; then "
-        "    apk add --no-cache python3 openssh-client curl ca-certificates >/dev/null 2>&1 || true; "
-        "  fi; "
-        "fi; "
-        "command -v python3 >/dev/null 2>&1 || { echo NO_PYTHON; exit 2; }; "
-        "if [ -f /tmp/vex-fm.pid ]; then kill \"$(cat /tmp/vex-fm.pid)\" >/dev/null 2>&1 || true; fi; "
-        "if [ -f /tmp/vex-pinggy.pid ]; then kill \"$(cat /tmp/vex-pinggy.pid)\" >/dev/null 2>&1 || true; fi; "
-        "rm -f /tmp/vex-fm.log /tmp/vex-fm.pid /tmp/vex-pinggy.log /tmp/vex-pinggy.pid; "
-        f"echo {fm_b64} | base64 -d > /tmp/vex-fm.py || {{ echo FM_WRITE_FAIL; exit 3; }}; "
-        f"setsid python3 /tmp/vex-fm.py --host 127.0.0.1 --port {int(port)} "
-        f"--token {token} --root / >/tmp/vex-fm.log 2>&1 & "
-        "echo $! > /tmp/vex-fm.pid; "
-        "sleep 1; "
-        "if ! kill -0 \"$(cat /tmp/vex-fm.pid)\" 2>/dev/null; then "
-        "  echo FM_START_FAIL; cat /tmp/vex-fm.log 2>/dev/null; exit 4; "
-        "fi; "
-        "command -v ssh >/dev/null 2>&1 || "
-        "{ command -v apt-get >/dev/null 2>&1 && apt-get install -y -qq openssh-client >/dev/null 2>&1; }; "
-        "SSH_OPTS='-p 443 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-        "-o LogLevel=ERROR -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes'; "
-        f"setsid ssh $SSH_OPTS -R0:localhost:{int(port)} a.pinggy.io >/tmp/vex-pinggy.log 2>&1 & "
-        "echo $! > /tmp/vex-pinggy.pid; "
-        "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do "
-        "  if grep -Eiq 'https://[A-Za-z0-9._-]*pinggy' /tmp/vex-pinggy.log 2>/dev/null; then break; fi; "
-        "  sleep 1; "
-        "done; "
-        "URL=$(grep -Eio 'https://[A-Za-z0-9._-]+pinggy\\.[A-Za-z]+' /tmp/vex-pinggy.log 2>/dev/null | head -n1); "
-        "if [ -z \"$URL\" ] && ! grep -q 'pinggy' /tmp/vex-pinggy.log 2>/dev/null; then "
-        "  kill \"$(cat /tmp/vex-pinggy.pid)\" >/dev/null 2>&1 || true; "
-        "  setsid ssh $SSH_OPTS -R0:localhost:{port} pinggy.io >/tmp/vex-pinggy.log 2>&1 & "
-        "  echo $! > /tmp/vex-pinggy.pid; "
-        "  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do "
-        "    URL=$(grep -Eio 'https://[A-Za-z0-9._-]+pinggy\\.[A-Za-z]+' /tmp/vex-pinggy.log 2>/dev/null | head -n1); "
-        "    [ -n \"$URL\" ] && break; sleep 1; "
-        "  done; "
-        "fi; "
-        "echo \"TOKEN={token}\"; "
-        "echo \"PORT={port}\"; "
-        "echo \"URL=${URL:-}\"; "
-        "if [ -n \"$URL\" ]; then echo FM_OK; else echo FM_TUNNEL_FAIL; tail -n 30 /tmp/vex-pinggy.log 2>/dev/null; exit 5; fi"
-    ).replace("{port}", str(int(port))).replace("{token}", token)
+    p = int(port)
+    t = token
+    return f"""set +e
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v python3 >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -qq >/dev/null 2>&1 || true
+    apt-get install -y -qq python3 openssh-client curl ca-certificates >/dev/null 2>&1 || true
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache python3 openssh-client curl ca-certificates >/dev/null 2>&1 || true
+  fi
+fi
+command -v python3 >/dev/null 2>&1 || {{ echo NO_PYTHON; exit 2; }}
+if [ -f /tmp/vex-fm.pid ]; then kill "$(cat /tmp/vex-fm.pid)" >/dev/null 2>&1 || true; fi
+if [ -f /tmp/vex-pinggy.pid ]; then kill "$(cat /tmp/vex-pinggy.pid)" >/dev/null 2>&1 || true; fi
+rm -f /tmp/vex-fm.log /tmp/vex-fm.pid /tmp/vex-pinggy.log /tmp/vex-pinggy.pid
+echo {fm_b64} | base64 -d > /tmp/vex-fm.py || {{ echo FM_WRITE_FAIL; exit 3; }}
+setsid python3 /tmp/vex-fm.py --host 127.0.0.1 --port {p} --token {t} --root / >/tmp/vex-fm.log 2>&1 &
+echo $! > /tmp/vex-fm.pid
+sleep 1
+if ! kill -0 "$(cat /tmp/vex-fm.pid)" 2>/dev/null; then
+  echo FM_START_FAIL
+  cat /tmp/vex-fm.log 2>/dev/null || true
+  exit 4
+fi
+command -v ssh >/dev/null 2>&1 || {{
+  command -v apt-get >/dev/null 2>&1 && apt-get install -y -qq openssh-client >/dev/null 2>&1 || true
+}}
+printf '#!/bin/sh\\necho\\n' > /tmp/vex-askpass.sh
+chmod +x /tmp/vex-askpass.sh
+export DISPLAY=:0 SSH_ASKPASS=/tmp/vex-askpass.sh SSH_ASKPASS_REQUIRE=force
+SSH_OPTS="-p 443 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o NumberOfPasswordPrompts=1"
+start_pinggy() {{
+  HOST="$1"
+  setsid ssh $SSH_OPTS -R0:127.0.0.1:{p} "$HOST" </dev/null >/tmp/vex-pinggy.log 2>&1 &
+  echo $! > /tmp/vex-pinggy.pid
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+    URL=$(grep -Eio 'https://[A-Za-z0-9._-]+\\.pinggy[A-Za-z0-9._-]*\\.[A-Za-z]+' /tmp/vex-pinggy.log 2>/dev/null | head -n1)
+    if [ -n "$URL" ]; then return 0; fi
+    if [ -f /tmp/vex-pinggy.pid ]; then
+      PID=$(cat /tmp/vex-pinggy.pid 2>/dev/null)
+      if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then return 1; fi
+    fi
+    sleep 1
+  done
+  return 1
+}}
+URL=""
+for HOST in free.pinggy.io a.pinggy.io pinggy.io; do
+  if [ -f /tmp/vex-pinggy.pid ]; then kill "$(cat /tmp/vex-pinggy.pid)" >/dev/null 2>&1 || true; fi
+  if start_pinggy "$HOST"; then
+    break
+  fi
+done
+URL=$(grep -Eio 'https://[A-Za-z0-9._-]+\\.pinggy[A-Za-z0-9._-]*\\.[A-Za-z]+' /tmp/vex-pinggy.log 2>/dev/null | head -n1)
+echo "TOKEN={t}"
+echo "PORT={p}"
+echo "URL=${{URL:-}}"
+if [ -n "$URL" ]; then
+  echo FM_OK
+else
+  echo FM_TUNNEL_FAIL
+  tail -n 40 /tmp/vex-pinggy.log 2>/dev/null || true
+  exit 5
+fi
+"""
 
 
 def build_stop_script() -> str:
