@@ -112,10 +112,76 @@ BRAND_FIELDS = {
 }
 
 OS_CHOICES = {
-    "ubuntu:22.04": "Ubuntu 22.04",
-    "ubuntu:24.04": "Ubuntu 24.04",
+    "ubuntu:22.04": "Ubuntu 22.04 LTS",
+    "ubuntu:24.04": "Ubuntu 24.04 LTS",
     "debian:12": "Debian 12",
+    "debian:13": "Debian 13",
     "alpine:3.20": "Alpine 3.20",
+    "alpine:3.21": "Alpine 3.21",
+    "rocky:9": "Rocky Linux 9",
+    "almalinux:9": "AlmaLinux 9",
+    "fedora:40": "Fedora 40",
+    "fedora:41": "Fedora 41",
+    "oracle:9": "Oracle Linux 9",
+    "opensuse:15": "openSUSE Leap 15",
+}
+
+
+def _parse_plans(raw: str) -> list[dict[str, object]]:
+    """Parse PLANS=name:mem:cpu:disk[:badge[:price]],name2:..."""
+    plans: list[dict[str, object]] = []
+    for i, part in enumerate(raw.replace("\n", ",").split(",")):
+        part = part.strip()
+        if not part:
+            continue
+        bits = [b.strip() for b in part.split(":")]
+        if len(bits) < 4:
+            continue
+        name, mem_s, cpu_s, disk_s = bits[0], bits[1], bits[2], bits[3]
+        badge = bits[4] if len(bits) > 4 else ""
+        price = bits[5] if len(bits) > 5 else ""
+        if not name:
+            continue
+        try:
+            mem, cpu, disk = int(mem_s), int(cpu_s), int(disk_s)
+        except ValueError:
+            continue
+        plans.append(
+            {
+                "name": name,
+                "memory_mb": mem,
+                "cpus": cpu,
+                "disk_gb": disk,
+                "badge": badge,
+                "price": price,
+                "sort_order": i + 1,
+            }
+        )
+    return plans
+
+
+# Seed plans from .env (optional). Format:
+# PLANS=Starter:1024:1:10:Free,Pro:2048:2:25:Popular:$4,Business:4096:4:50
+ENV_PLANS: list[dict[str, object]] = _parse_plans(os.getenv("PLANS", ""))
+
+# Discord embed colors for brand primary_color
+BRAND_DISCORD_COLORS: dict[str, int] = {
+    "cyan": 0x00FFFF,
+    "magenta": 0xFF00FF,
+    "blue": 0x3498DB,
+    "green": 0x00FF00,
+    "red": 0xFF0000,
+    "yellow": 0xFFFF00,
+    "white": 0xFFFFFF,
+    "black": 0x000000,
+    "bright_cyan": 0x5FFFFF,
+    "bright_magenta": 0xFF5FFF,
+    "bright_blue": 0x5F5FFF,
+    "bright_green": 0x5FFF5F,
+    "bright_red": 0xFF5F5F,
+    "bright_yellow": 0xFFFF5F,
+    "bright_white": 0xFFFFFF,
+    "bright_black": 0x5F5F5F,
 }
 
 

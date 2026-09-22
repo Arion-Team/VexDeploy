@@ -19,7 +19,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import config
-from branding import BrandingManager, render_brand_embed
+from branding import (
+    BrandingManager,
+    brand_color,
+    brand_embed,
+    render_brand_embed,
+    scrub_aytro,
+)
 from database import Database
 from invites import InviteTracker
 from motd import install_branding_files, run_installer
@@ -453,11 +459,11 @@ async def provision(
 
 async def send_credentials_dm(user: discord.abc.User, vps_data: dict, status_msg: Optional[discord.Message]) -> None:
     brand = bot.branding.active()
-    embed = discord.Embed(
-        title=f"VPS Ready — {brand.get('brand_name', 'VexDeploy')}",
-        color=discord.Color.green(),
-        timestamp=datetime.now(timezone.utc),
+    embed = bot.branding.embed(
+        title=f"VPS Ready — {scrub_aytro(brand.get('brand_name', 'VexDeploy'))}",
     )
+    embed.color = discord.Color.green()
+    embed.timestamp = datetime.now(timezone.utc)
     embed.add_field(name="VPS ID", value=str(vps_data.get("vps_id", "")), inline=True)
     embed.add_field(name="IP", value=str(vps_data.get("ip") or vps_data.get("ip_address") or "—"), inline=True)
     embed.add_field(name="SSH Port", value=str(vps_data.get("ssh_port") or 22), inline=True)
@@ -477,8 +483,10 @@ async def send_credentials_dm(user: discord.abc.User, vps_data: dict, status_msg
         value=f"{human_mb(int(vps_data.get('memory_mb', 0)))} / {vps_data.get('cpus')} CPU / {vps_data.get('disk_gb')}GB",
         inline=True,
     )
-    embed.add_field(name="Brand", value=str(vps_data.get("brand_label") or ""), inline=True)
-    embed.set_footer(text=brand.get("footer") or brand.get("brand_name", "VexDeploy"))
+    embed.add_field(name="Brand", value=scrub_aytro(vps_data.get("brand_label") or ""), inline=True)
+    embed.set_footer(
+        text=scrub_aytro(brand.get("footer") or brand.get("brand_name") or "VexDeploy")
+    )
 
     sent = False
     try:
@@ -544,13 +552,12 @@ def cooldown_ok(owner_id: str) -> tuple[bool, str]:
 @bot.hybrid_command(name="help", description="Show all available commands")
 async def help_cmd(ctx: commands.Context) -> None:
     brand = bot.branding.active()
-    embed = discord.Embed(
-        title=f"{brand.get('brand_name', 'VexDeploy')} — Commands",
-        description=brand.get("brand_tagline", "Instant VPS Hosting"),
-        color=discord.Color.teal(),
+    embed = bot.branding.embed(
+        title=f"{scrub_aytro(brand.get('brand_name', 'VexDeploy'))} — Commands",
+        description=str(brand.get("brand_tagline") or "Instant VPS Hosting"),
     )
     user_cmds = (
-        "`/createvps` `/invites` `/leaderboard` `/vps` `/list` "
+        "`/createvps` (plan + OS UI) `/plans` `/invites` `/leaderboard` `/vps` `/list` "
         "`/manage_vps` (dashboard) `/connect_vps` `/vps_stats` `/change_ssh_password` "
         "`/vps_shell` `/vps_console` "
         "`/vps_usage` `/transfer_vps` `/refresh-motd` `/help`"
@@ -559,6 +566,7 @@ async def help_cmd(ctx: commands.Context) -> None:
         "`/create_vps` `/vps_list` `/delete_vps` `/suspend_vps` `/unsuspend_vps` "
         "`/edit_vps` `/emergency_stop` `/emergency_remove` `/admin_stats` `/global_stats` "
         "`/system_info` `/cleanup_vps` `/backup_data` `/restore_data` "
+        "`/createplan` `/deleteplan` `/editplan` `/listplans` "
         "`/setinvites` `/addinvites` `/removeinvites` `/resetinvites` "
         "`/resetcooldown` "
         "`/blacklist` `/unblacklist` `/vps-enable` `/vps-disable` "
@@ -568,7 +576,9 @@ async def help_cmd(ctx: commands.Context) -> None:
     )
     embed.add_field(name="User", value=user_cmds, inline=False)
     embed.add_field(name="Admin", value=admin_cmds, inline=False)
-    embed.set_footer(text=brand.get("footer") or brand.get("brand_name", "VexDeploy"))
+    website = scrub_aytro(brand.get("website") or "")
+    if website and website not in {"-", "—"}:
+        embed.add_field(name="Website", value=website, inline=True)
     await ctx.send(embed=embed)
 
 
@@ -578,10 +588,9 @@ async def invites_cmd(ctx: commands.Context) -> None:
     status = bot.invite_tracker.eligibility_status(str(ctx.author.id))
     brand = bot.branding.active()
     pct = 100.0 if status["required"] <= 0 else min(100.0, status["valid"] / max(1, status["required"]) * 100)
-    embed = discord.Embed(
-        title="Invite progress",
-        color=discord.Color.blurple() if status["eligible"] else discord.Color.orange(),
-    )
+    embed = bot.branding.embed(title="Invite progress")
+    if not status["eligible"]:
+        embed.color = discord.Color.orange()
     embed.add_field(name="Valid invites", value=str(status["valid"]), inline=True)
     embed.add_field(name="Required", value=str(status["required"]), inline=True)
     embed.add_field(
@@ -618,100 +627,352 @@ async def leaderboard_cmd(ctx: commands.Context) -> None:
 
 
 # ── VPS user commands ───────────────────────────────────────
-@bot.hybrid_command(name="createvps", description="Create a VPS (requires enough invites)")
+async def precheck_create(author_id: str) -> Optional[str]:
+    """Return an error string if the user cannot create a VPS, else None."""
+    if bot.db.is_banned(author_id):
+        return "You are blacklisted from creating VPS."
+    if str(bot.db.get_setting("vps_enabled", "1")) not in {"1", "true", "True"}:
+        return "VPS creation is disabled."
+    status = bot.invite_tracker.eligibility_status(author_id)
+    if not status["eligible"]:
+        return (
+            f"You need **{status['remaining']}** more invite(s) "
+            f"(have {status['valid']}/{status['required']})."
+        )
+    max_user = int(bot.db.get_setting("max_vps_per_user", config.MAX_VPS_PER_USER))
+    if bot.db.count_vps(author_id) >= max_user:
+        return f"VPS limit reached ({max_user})."
+    max_total = int(bot.db.get_setting("max_total_vps", 20))
+    if bot.db.count_vps() >= max_total:
+        return "Global VPS capacity reached."
+    ok_cd, cd_msg = cooldown_ok(author_id)
+    if not ok_cd:
+        return cd_msg
+    return None
+
+
+class CustomVPSModal(discord.ui.Modal, title="Custom VPS resources"):
+    memory_mb = discord.ui.TextInput(
+        label="RAM (MB)", default="1024", required=True, min_length=1, max_length=6
+    )
+    cpus = discord.ui.TextInput(
+        label="CPU cores", default="1", required=True, min_length=1, max_length=2
+    )
+    disk_gb = discord.ui.TextInput(
+        label="Disk (GB)", default="10", required=True, min_length=1, max_length=6
+    )
+
+    def __init__(self, view: "CreateVPSView") -> None:
+        super().__init__()
+        self._parent = view
+        self.memory_mb.default = str(view.memory_mb)
+        self.cpus.default = str(view.cpus)
+        self.disk_gb.default = str(view.disk_gb)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if str(interaction.user.id) != self._parent.author_id:
+            await interaction.response.send_message("Not your panel.", ephemeral=True)
+            return
+        try:
+            mem = int(str(self.memory_mb).strip())
+            cpu = int(str(self.cpus).strip())
+            disk = int(str(self.disk_gb).strip())
+            validate_resources(mem, cpu, disk)
+        except (ValueError, ProviderError) as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+        self._parent.memory_mb = mem
+        self._parent.cpus = cpu
+        self._parent.disk_gb = disk
+        self._parent.plan_name = ""
+        embed = self._parent.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self._parent)
+
+
+class CreateVPSView(discord.ui.View):
+    def __init__(
+        self,
+        author_id: str,
+        *,
+        memory_mb: Optional[int] = None,
+        cpus: Optional[int] = None,
+        disk_gb: Optional[int] = None,
+        os_image: Optional[str] = None,
+        plan_name: str = "",
+    ) -> None:
+        super().__init__(timeout=180)
+        self.author_id = author_id
+        self.memory_mb = memory_mb or int(
+            bot.db.get_setting("default_vps_memory", config.DEFAULT_MEMORY_MB)
+        )
+        self.cpus = cpus or int(bot.db.get_setting("default_vps_cpu", config.DEFAULT_CPUS))
+        self.disk_gb = disk_gb or int(
+            bot.db.get_setting("default_vps_disk", config.DEFAULT_DISK_GB)
+        )
+        self.os_image = (os_image or config.DEFAULT_OS_IMAGE).strip()
+        if self.os_image not in config.OS_CHOICES:
+            # map images:ubuntu/22.04 → ubuntu:22.04 if possible
+            for k, v in config.OS_CHOICES.items():
+                if self.os_image.endswith(k.split(":", 1)[-1]) and ":" in self.os_image:
+                    if k.split(":", 1)[1] in self.os_image:
+                        self.os_image = k
+                        break
+        self.plan_name = plan_name
+        self.deploying = False
+
+        plans = bot.db.list_plans(enabled_only=True)
+        plan_row = 0
+        if plans:
+            plan_select = discord.ui.Select(
+                placeholder="📦 Choose a plan…",
+                min_values=1,
+                max_values=1,
+                row=0,
+                custom_id="createvps_plan",
+            )
+            for p in plans[:25]:
+                label = str(p["name"])[:100]
+                badge = str(p["badge"] or "")
+                if badge:
+                    label = f"{badge} · {label}"[:100]
+                desc = (
+                    f"{human_mb(int(p['memory_mb']))} · {int(p['cpus'])} CPU · "
+                    f"{int(p['disk_gb'])}GB"
+                )
+                if p["price"]:
+                    desc = f"{desc} · {p['price']}"
+                if p["description"]:
+                    desc = f"{desc} — {p['description']}"
+                plan_select.add_option(
+                    label=label,
+                    description=desc[:100],
+                    value=str(p["name"]),
+                    default=str(p["name"]) == self.plan_name,
+                )
+            plan_select.callback = self.on_plan
+            self.add_item(plan_select)
+            plan_row = 1
+
+        os_select = discord.ui.Select(
+            placeholder="🖥 Choose an OS…",
+            min_values=1,
+            max_values=1,
+            row=plan_row,
+            custom_id="createvps_os",
+        )
+        for key, label in list(config.OS_CHOICES.items())[:25]:
+            os_select.add_option(
+                label=label[:100],
+                value=key,
+                default=key == self.os_image,
+            )
+        os_select.callback = self.on_os
+        self.add_item(os_select)
+
+        # apply plan resources if a plan was preselected
+        if self.plan_name:
+            prow = bot.db.get_plan(self.plan_name)
+            if prow:
+                self.memory_mb = int(prow["memory_mb"])
+                self.cpus = int(prow["cpus"])
+                self.disk_gb = int(prow["disk_gb"])
+
+    def build_embed(self) -> discord.Embed:
+        brand = bot.branding.active()
+        plan_line = self.plan_name or "Custom"
+        embed = bot.branding.embed(
+            title=f"Deploy VPS — {scrub_aytro(brand.get('brand_name', 'VexDeploy'))}",
+            description=str(
+                brand.get("brand_tagline")
+                or "Pick a plan + OS, then hit Deploy."
+            ),
+        )
+        embed.add_field(name="Plan", value=f"`{plan_line}`", inline=True)
+        embed.add_field(
+            name="Resources",
+            value=f"`{human_mb(self.memory_mb)} · {self.cpus} CPU · {self.disk_gb}GB`",
+            inline=True,
+        )
+        os_label = config.OS_CHOICES.get(self.os_image, self.os_image)
+        embed.add_field(name="OS", value=f"`{os_label}`", inline=True)
+        status = bot.invite_tracker.eligibility_status(self.author_id)
+        embed.add_field(
+            name="Invites",
+            value=f"{status['valid']}/{status['required']}",
+            inline=True,
+        )
+        embed.add_field(
+            name="Your VPS",
+            value=f"{bot.db.count_vps(self.author_id)}/{int(bot.db.get_setting('max_vps_per_user', config.MAX_VPS_PER_USER))}",
+            inline=True,
+        )
+        embed.set_footer(
+            text="Select plan & OS, or ⚙ Custom for free-form resources · expires in 3 min"
+        )
+        return embed
+
+    def _authorized(self, user: discord.abc.User) -> bool:
+        return str(user.id) == self.author_id
+
+    async def on_plan(self, interaction: discord.Interaction) -> None:
+        if not self._authorized(interaction.user):
+            await interaction.response.send_message("Not your panel.", ephemeral=True)
+            return
+        value = interaction.data.get("values", [""])[0] if interaction.data else ""
+        row = bot.db.get_plan(str(value))
+        if not row:
+            await interaction.response.send_message("Unknown plan.", ephemeral=True)
+            return
+        self.plan_name = str(row["name"])
+        self.memory_mb = int(row["memory_mb"])
+        self.cpus = int(row["cpus"])
+        self.disk_gb = int(row["disk_gb"])
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def on_os(self, interaction: discord.Interaction) -> None:
+        if not self._authorized(interaction.user):
+            await interaction.response.send_message("Not your panel.", ephemeral=True)
+            return
+        value = interaction.data.get("values", [""])[0] if interaction.data else ""
+        if value not in config.OS_CHOICES and value not in config.OS_CHOICES.values():
+            # allow label or key
+            for k, v in config.OS_CHOICES.items():
+                if value == v:
+                    value = k
+                    break
+        if value not in config.OS_CHOICES:
+            await interaction.response.send_message("Unknown OS.", ephemeral=True)
+            return
+        self.os_image = value
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(
+        label="⚙ Custom resources",
+        style=discord.ButtonStyle.secondary,
+        row=3,
+        custom_id="createvps_custom",
+    )
+    async def custom_btn(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not self._authorized(interaction.user):
+            await interaction.response.send_message("Not your panel.", ephemeral=True)
+            return
+        await interaction.response.send_modal(CustomVPSModal(self))
+
+    @discord.ui.button(
+        label="🚀 Deploy",
+        style=discord.ButtonStyle.success,
+        row=3,
+        custom_id="createvps_deploy",
+    )
+    async def deploy_btn(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not self._authorized(interaction.user):
+            await interaction.response.send_message("Not your panel.", ephemeral=True)
+            return
+        if self.deploying:
+            await interaction.response.send_message("Already deploying…", ephemeral=True)
+            return
+        err = await precheck_create(self.author_id)
+        if err:
+            await interaction.response.send_message(f"❌ {err}", ephemeral=True)
+            return
+        try:
+            validate_resources(self.memory_mb, self.cpus, self.disk_gb)
+        except ProviderError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+
+        self.deploying = True
+        for child in self.children:
+            child.disabled = True  # type: ignore[attr-defined]
+        embed = self.build_embed()
+        embed.set_footer(text="Deploying…")
+        await interaction.response.edit_message(embed=embed, view=self)
+
+        status_msg = await interaction.original_response()
+        author = interaction.user
+        mem, cpu, disk, image = self.memory_mb, self.cpus, self.disk_gb, self.os_image
+        success, vps_data, err = await provision(
+            interaction, author, mem, cpu, disk, image, status_msg=status_msg
+        )
+        if not success or not vps_data:
+            logger.warning("/createvps UI failed for %s: %s", self.author_id, err)
+            self.deploying = False
+            for child in self.children:
+                child.disabled = False  # type: ignore[attr-defined]
+            try:
+                await status_msg.edit(
+                    content=f"❌ {err}", embed=None, view=self
+                )
+            except discord.HTTPException:
+                pass
+            return
+
+        logger.info("VPS created for %s: %s", self.author_id, vps_data.get("vps_id"))
+        await send_credentials_dm(author, vps_data, status_msg)
+        await bot.send_log_channel(
+            f"✅ VPS `{vps_data.get('vps_id')}` created for <@{self.author_id}> "
+            f"({human_mb(mem)}/{cpu}C/{disk}GB · {image}"
+            + (f" · plan {self.plan_name}" if self.plan_name else "")
+            + ")"
+        )
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True  # type: ignore[attr-defined]
+
+
+@bot.hybrid_command(
+    name="createvps",
+    description="Create a VPS — pick a plan and OS in the UI",
+)
 @app_commands.describe(
-    memory_mb="RAM in MB",
-    cpus="CPU cores",
-    disk_gb="Disk in GB",
-    os_image="Base OS image",
+    plan="Optional plan name",
+    memory_mb="RAM in MB (custom)",
+    cpus="CPU cores (custom)",
+    disk_gb="Disk in GB (custom)",
+    os_image="Base OS image key",
 )
 async def createvps_cmd(
     ctx: commands.Context,
+    plan: Optional[str] = None,
     memory_mb: Optional[int] = None,
     cpus: Optional[int] = None,
     disk_gb: Optional[int] = None,
     os_image: Optional[str] = None,
 ) -> None:
     author_id = str(ctx.author.id)
-
-    if bot.db.is_banned(author_id):
-        await ctx.send("❌ You are blacklisted from creating VPS.", ephemeral=True)
-        return
-    if str(bot.db.get_setting("vps_enabled", "1")) not in {"1", "true", "True"}:
-        await ctx.send("❌ VPS creation is disabled.", ephemeral=True)
+    err = await precheck_create(author_id)
+    if err:
+        await ctx.send(f"❌ {err}", ephemeral=True)
         return
 
-    status = bot.invite_tracker.eligibility_status(author_id)
-    if not status["eligible"]:
-        await ctx.send(
-            f"❌ You need **{status['remaining']}** more invite(s) "
-            f"(have {status['valid']}/{status['required']}).",
-            ephemeral=True,
-        )
-        return
-
-    max_user = int(bot.db.get_setting("max_vps_per_user", config.MAX_VPS_PER_USER))
-    if bot.db.count_vps(author_id) >= max_user:
-        await ctx.send(f"❌ VPS limit reached ({max_user}).", ephemeral=True)
-        return
-
-    max_total = int(bot.db.get_setting("max_total_vps", 20))
-    if bot.db.count_vps() >= max_total:
-        await ctx.send("❌ Global VPS capacity reached.", ephemeral=True)
-        return
-
-    ok_cd, cd_msg = cooldown_ok(author_id)
-    if not ok_cd:
-        await ctx.send(f"❌ {cd_msg}", ephemeral=True)
-        return
-
-    mem = memory_mb or int(bot.db.get_setting("default_vps_memory", config.DEFAULT_MEMORY_MB))
-    cpu = cpus or int(bot.db.get_setting("default_vps_cpu", config.DEFAULT_CPUS))
-    disk = disk_gb or int(bot.db.get_setting("default_vps_disk", config.DEFAULT_DISK_GB))
-    image = (os_image or config.DEFAULT_OS_IMAGE).strip()
-
-    # validate early so defaults never silently fail
-    try:
-        validate_resources(mem, cpu, disk)
-    except ProviderError as exc:
-        await ctx.send(f"❌ {exc}", ephemeral=True)
-        return
-
-    if not isinstance(ctx.author, discord.Member) or ctx.interaction:
-        # prefer ephemeral interaction progress for slash
-        status_msg = None
-        if ctx.interaction:
+    plan_name = ""
+    if plan:
+        prow = bot.db.get_plan(plan)
+        if not prow:
             await ctx.send(
-                f"🚀 Deploying VPS…\n`{human_mb(mem)} · {cpu} CPU · {disk}GB · {image}`",
+                f"❌ Unknown plan `{plan}`. See `/plans`.",
                 ephemeral=True,
             )
-            status_msg = await ctx.interaction.original_response()
-        else:
-            status_msg = await ctx.send(f"🚀 Deploying…")
-    else:
-        status_msg = await ctx.send(
-            f"🚀 Deploying VPS…\n`{human_mb(mem)} · {cpu} CPU · {disk}GB · {image}`"
-        )
+            return
+        plan_name = str(prow["name"])
+        memory_mb = int(prow["memory_mb"])
+        cpus = int(prow["cpus"])
+        disk_gb = int(prow["disk_gb"])
 
-    bot.db.log_deployment(author_id, "", "start", "ok", f"{mem}MB/{cpu}C/{disk}GB")
-    success, vps_data, err = await provision(
-        ctx, ctx.author, mem, cpu, disk, image, status_msg=status_msg
+    view = CreateVPSView(
+        author_id,
+        memory_mb=memory_mb,
+        cpus=cpus,
+        disk_gb=disk_gb,
+        os_image=os_image,
+        plan_name=plan_name,
     )
-    if not success or not vps_data:
-        logger.warning("/createvps failed for %s: %s", author_id, err)
-        if status_msg:
-            try:
-                await status_msg.edit(content=f"❌ {err}", embed=None, view=None)
-            except discord.HTTPException:
-                pass
-        return
-
-    logger.info("VPS created for %s: %s", author_id, vps_data.get("vps_id"))
-    await send_credentials_dm(ctx.author, vps_data, status_msg)
-    await bot.send_log_channel(
-        f"✅ VPS `{vps_data.get('vps_id')}` created for <@{author_id}> "
-        f"({human_mb(mem)}/{cpu}C/{disk}GB)"
-    )
+    await ctx.send(embed=view.build_embed(), view=view, ephemeral=True)
 
 
 @bot.hybrid_command(name="list", description="List your VPS instances")
@@ -747,9 +1008,11 @@ async def vps_cmd(ctx: commands.Context, vps_id: Optional[str] = None) -> None:
         await ctx.send("No VPS found.", ephemeral=True)
         return
     row = rows[0]
-    embed = discord.Embed(
+    embed = bot.branding.embed(
         title=f"VPS {row['vps_id']}",
-        color=discord.Color.green() if row["status"] == "running" else discord.Color.red(),
+    )
+    embed.color = (
+        discord.Color.green() if row["status"] == "running" else discord.Color.red()
     )
     embed.add_field(name="Status", value=row["status"], inline=True)
     embed.add_field(name="IP", value=row["ip_address"] or "—", inline=True)
@@ -768,7 +1031,7 @@ async def vps_cmd(ctx: commands.Context, vps_id: Optional[str] = None) -> None:
 
 
 @bot.hybrid_command(name="connect_vps", description="Get connection details by DM")
-@app_commands.describe(vps_id="VPS identifier", token="Optional access token from panel")
+@app_commands.describe(vps_id="VPS identifier", token="Optional access token from dashboard")
 async def connect_vps_cmd(ctx: commands.Context, vps_id: str, token: Optional[str] = None) -> None:
     row = bot.db.get_vps(vps_id)
     if not row or row["owner_id"] != str(ctx.author.id):
@@ -1513,6 +1776,199 @@ async def resetcooldown_cmd(
         f"✅ Cooldown reset for {target.mention} — they can create a VPS now.",
         ephemeral=True,
     )
+
+
+@bot.hybrid_command(name="plans", description="List available VPS plans")
+async def plans_cmd(ctx: commands.Context) -> None:
+    rows = bot.db.list_plans(enabled_only=True)
+    brand = bot.branding.active()
+    if not rows:
+        embed = bot.branding.embed(
+            title="VPS Plans",
+            description="No plans yet. Admins can add one with `/createplan` or set `PLANS=` in `.env`.",
+        )
+        await ctx.send(embed=embed, ephemeral=True)
+        return
+    embed = bot.branding.embed(
+        title=f"VPS Plans — {scrub_aytro(brand.get('brand_name', 'VexDeploy'))}",
+        description=str(
+            brand.get("brand_tagline")
+            or "Choose a plan, then run `/createvps`."
+        ),
+    )
+    for p in rows:
+        name = str(p["name"])
+        badge = str(p["badge"] or "")
+        title = f"{badge} · {name}" if badge else name
+        price = str(p["price"] or "")
+        desc_lines = [
+            f"**{human_mb(int(p['memory_mb']))}** RAM · **{int(p['cpus'])}** CPU · **{int(p['disk_gb'])}GB** NVMe",
+        ]
+        if price:
+            desc_lines.append(f"Price: `{price}`")
+        if p["description"]:
+            desc_lines.append(str(p["description"]))
+        if int(p["min_invites"] or 0) > 0:
+            desc_lines.append(f"Requires **{int(p['min_invites'])}** invites")
+        desc_lines.append(f"Deploy: `/createvps plan:{name}`")
+        embed.add_field(
+            name=title[:256],
+            value="\n".join(desc_lines)[:1024],
+            inline=False,
+        )
+    embed.set_footer(
+        text="Pick a plan in `/createvps` · Custom resources via ⚙ button"
+    )
+    await ctx.send(embed=embed, ephemeral=True)
+
+
+@bot.hybrid_command(
+    name="createplan",
+    description="Create a VPS plan (Admin only)",
+)
+@app_commands.describe(
+    name="Plan name",
+    memory_mb="RAM MB",
+    cpus="CPU cores",
+    disk_gb="Disk GB",
+    badge="Short badge (e.g. Popular)",
+    price="Price label (e.g. $4/mo or Free)",
+    description="Long description shown in /plans",
+    min_invites="Extra invites required for this plan (0 = use global)",
+)
+async def createplan_cmd(
+    ctx: commands.Context,
+    name: str,
+    memory_mb: app_commands.Range[int, 512, 65536],
+    cpus: app_commands.Range[int, 1, 32],
+    disk_gb: app_commands.Range[int, 5, 1000],
+    badge: str = "",
+    price: str = "",
+    description: str = "",
+    min_invites: app_commands.Range[int, 0, 10000] = 0,
+) -> None:
+    await ensure_slash_admin_ctx(ctx)
+    name = scrub_aytro(name.strip())[:32]
+    if not name:
+        await ctx.send("❌ Plan name required.", ephemeral=True)
+        return
+    if bot.db.get_plan(name):
+        await ctx.send(f"❌ Plan `{name}` already exists.", ephemeral=True)
+        return
+    try:
+        validate_resources(memory_mb, cpus, disk_gb)
+    except ProviderError as exc:
+        await ctx.send(f"❌ {exc}", ephemeral=True)
+        return
+    plan_id = bot.db.create_plan(
+        name=name,
+        memory_mb=memory_mb,
+        cpus=cpus,
+        disk_gb=disk_gb,
+        badge=scrub_aytro(badge.strip())[:32],
+        description=scrub_aytro(description.strip())[:200],
+        price=scrub_aytro(price.strip())[:32],
+        min_invites=min_invites,
+        source="manual",
+    )
+    embed = bot.branding.embed(
+        title="✅ Plan created",
+        description=f"**{name}** → {human_mb(memory_mb)} / {cpus} CPU / {disk_gb}GB",
+    )
+    embed.add_field(name="Plan ID", value=f"`{plan_id}`", inline=True)
+    if badge:
+        embed.add_field(name="Badge", value=badge, inline=True)
+    if price:
+        embed.add_field(name="Price", value=price, inline=True)
+    await ctx.send(embed=embed, ephemeral=True)
+
+
+@bot.hybrid_command(name="deleteplan", description="Delete a VPS plan (Admin only)")
+@app_commands.describe(name="Plan name")
+async def deleteplan_cmd(ctx: commands.Context, name: str) -> None:
+    await ensure_slash_admin_ctx(ctx)
+    if bot.db.delete_plan(name):
+        await ctx.send(f"🗑️ Deleted plan `{name}`.", ephemeral=True)
+    else:
+        await ctx.send(f"❌ Plan `{name}` not found.", ephemeral=True)
+
+
+@bot.hybrid_command(name="listplans", description="List all plans including disabled (Admin only)")
+async def listplans_cmd(ctx: commands.Context) -> None:
+    await ensure_slash_admin_ctx(ctx)
+    rows = bot.db.list_plans(enabled_only=False)
+    if not rows:
+        await ctx.send("No plans.", ephemeral=True)
+        return
+    embed = bot.branding.embed(title=f"All plans ({len(rows)})")
+    for p in rows:
+        state = "on" if int(p["enabled"] or 0) else "off"
+        embed.add_field(
+            name=f"{p['name']} · {state}",
+            value=(
+                f"`{human_mb(int(p['memory_mb']))}/{int(p['cpus'])}C/"
+                f"{int(p['disk_gb'])}GB` · {p['price'] or '—'} · "
+                f"badge `{p['badge'] or '—'}` · src `{p['source']}`"
+            ),
+            inline=False,
+        )
+    await ctx.send(embed=embed, ephemeral=True)
+
+
+@bot.hybrid_command(name="editplan", description="Edit a VPS plan (Admin only)")
+@app_commands.describe(
+    name="Plan name",
+    memory_mb="New RAM MB (omit to keep)",
+    cpus="New CPU (omit to keep)",
+    disk_gb="New disk GB (omit to keep)",
+    badge="Badge (empty string clears)",
+    price="Price label",
+    description="Description",
+    min_invites="Extra invites",
+    enabled="Enable or disable the plan",
+    sort_order="Sort position",
+)
+async def editplan_cmd(
+    ctx: commands.Context,
+    name: str,
+    memory_mb: Optional[app_commands.Range[int, 512, 65536]] = None,
+    cpus: Optional[app_commands.Range[int, 1, 32]] = None,
+    disk_gb: Optional[app_commands.Range[int, 5, 1000]] = None,
+    badge: Optional[str] = None,
+    price: Optional[str] = None,
+    description: Optional[str] = None,
+    min_invites: Optional[app_commands.Range[int, 0, 10000]] = None,
+    enabled: Optional[bool] = None,
+    sort_order: Optional[app_commands.Range[int, 1, 1000]] = None,
+) -> None:
+    await ensure_slash_admin_ctx(ctx)
+    if not bot.db.get_plan(name):
+        await ctx.send(f"❌ Plan `{name}` not found.", ephemeral=True)
+        return
+    fields: dict = {}
+    if memory_mb is not None:
+        fields["memory_mb"] = memory_mb
+    if cpus is not None:
+        fields["cpus"] = cpus
+    if disk_gb is not None:
+        fields["disk_gb"] = disk_gb
+    if badge is not None:
+        fields["badge"] = scrub_aytro(badge.strip())[:32]
+    if price is not None:
+        fields["price"] = scrub_aytro(price.strip())[:32]
+    if description is not None:
+        fields["description"] = scrub_aytro(description.strip())[:200]
+    if min_invites is not None:
+        fields["min_invites"] = min_invites
+    if enabled is not None:
+        fields["enabled"] = 1 if enabled else 0
+    if sort_order is not None:
+        fields["sort_order"] = sort_order
+    if not fields:
+        await ctx.send("Nothing to update.", ephemeral=True)
+        return
+    bot.db.update_plan(name, **fields)
+    await ctx.send(f"✅ Updated plan `{name}`.", ephemeral=True)
 
 
 @bot.hybrid_command(name="addinvites", description="Manually add valid invites (Admin only)")

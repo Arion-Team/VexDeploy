@@ -34,7 +34,15 @@ IMAGE_MAP = {
     "ubuntu:22.04": "images:ubuntu/22.04",
     "ubuntu:24.04": "images:ubuntu/24.04",
     "debian:12": "images:debian/12",
+    "debian:13": "images:debian/13",
     "alpine:3.20": "images:alpine/3.20/cloud",
+    "alpine:3.21": "images:alpine/3.21/cloud",
+    "rocky:9": "images:rockylinux/9",
+    "almalinux:9": "images:almalinux/9",
+    "fedora:40": "images:fedora/40",
+    "fedora:41": "images:fedora/41",
+    "oracle:9": "images:oracle/9",
+    "opensuse:15": "images:opensuse/15.6",
 }
 
 IMAGE_CANDIDATES: dict[str, list[str]] = {
@@ -51,7 +59,19 @@ IMAGE_CANDIDATES: dict[str, list[str]] = {
         "images:ubuntu/noble",
     ],
     "debian:12": ["images:debian/12", "images:debian/bookworm"],
+    "debian:13": ["images:debian/13", "images:debian/trixie"],
     "alpine:3.20": ["images:alpine/3.20/cloud", "images:alpine/3.20"],
+    "alpine:3.21": ["images:alpine/3.21/cloud", "images:alpine/3.21"],
+    "rocky:9": ["images:rockylinux/9", "images:rockylinux/9/cloud"],
+    "almalinux:9": ["images:almalinux/9", "images:almalinux/9/cloud"],
+    "fedora:40": ["images:fedora/40", "images:fedora/40/cloud"],
+    "fedora:41": ["images:fedora/41", "images:fedora/41/cloud"],
+    "oracle:9": ["images:oracle/9", "images:oracle/9/cloud"],
+    "opensuse:15": [
+        "images:opensuse/15.6",
+        "images:opensuse/15",
+        "images:opensuse/leap/15.6",
+    ],
 }
 
 

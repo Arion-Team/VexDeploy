@@ -9,11 +9,13 @@ Built as a full clean rewrite with **VexDeploy** as the default brand. No legacy
 ## Features
 
 - **Invite-gated `/createvps`** — users must hit a configurable invite goal
+- **Plan catalog + creation UI** — `/plans`, `/createplan`, pick plan + OS in Discord, custom resources modal
+- **12 OS images** — Ubuntu, Debian, Alpine, Rocky, Alma, Fedora, Oracle, openSUSE
 - **Invite tracking** — join attribution, leave invalidation, dedup, no credit on ambiguity
 - **Completion alerts** — one-time DM + optional channel ping when goal is reached
 - **Clean LXD provider** — resource limits (RAM/CPU/disk), network, labels, bootstrap SSH
 - **Post-deploy branding** — brand files + idempotent MOTD installer on every new VPS
-- **Multi-profile branding** — versioned fields, switchable profiles, white-label ready
+- **Multi-profile branding** — versioned fields, switchable profiles, white-label ready (AytroCloud scrubbed)
 - **Secure credentials** — passwords delivered via DM spoilers only
 - **SQLite** — zero external database
 - **Auto-stop on bot offline** — when the bot shuts down (SIGINT/SIGTERM/disconnect), every managed VPS is stopped and marked `stopped` in the DB
@@ -116,7 +118,7 @@ Defaults always pass validation (fixes the old 5GB / min-10GB mismatch).
 
 ### User
 
-`/createvps` `/invites` `/leaderboard` `/vps` `/list` `/manage_vps` `/connect_vps` `/vps_stats` `/change_ssh_password` `/vps_shell` `/vps_console` `/vps_usage` `/transfer_vps` `/refresh-motd` `/help`
+`/createvps` (plan + OS picker UI) `/plans` `/invites` `/leaderboard` `/vps` `/list` `/manage_vps` `/connect_vps` `/vps_stats` `/change_ssh_password` `/vps_shell` `/vps_console` `/vps_usage` `/transfer_vps` `/refresh-motd` `/help`
 
 ### Admin — access
 
@@ -125,6 +127,16 @@ Defaults always pass validation (fixes the old 5GB / min-10GB mismatch).
 ### Admin — VPS
 
 `/create_vps` `/vps_list` `/delete_vps` `/suspend_vps` `/unsuspend_vps` `/edit_vps` `/emergency_stop` `/emergency_remove` `/admin_stats` `/global_stats` `/system_info` `/cleanup_vps` `/backup_data` `/restore_data` `/container_limit` `/reinstall_bot`
+
+### Admin — plans
+
+`/createplan` `/editplan` `/deleteplan` `/listplans`
+
+Seed via `.env`:
+
+```env
+PLANS=Starter:1024:1:10:Free,Pro:2048:2:25:Popular:$4,Business:4096:4:50:Best
+```
 
 ### Admin — branding
 

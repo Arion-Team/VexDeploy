@@ -169,6 +169,26 @@ class Database:
             )
             """
         )
+        self._exec(
+            """
+            CREATE TABLE IF NOT EXISTS plans (
+                plan_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                memory_mb INTEGER NOT NULL,
+                cpus INTEGER NOT NULL,
+                disk_gb INTEGER NOT NULL,
+                badge TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                price TEXT DEFAULT '',
+                enabled INTEGER DEFAULT 1,
+                sort_order INTEGER DEFAULT 0,
+                min_invites INTEGER DEFAULT 0,
+                source TEXT DEFAULT 'manual',
+                created_at TEXT NOT NULL,
+                updated_at TEXT
+            )
+            """
+        )
 
         self._repair_vps_schema()
         self._repair_deployment_logs_schema()
@@ -188,6 +208,188 @@ class Database:
         if self.get_setting("brand_enforced_v1", None) is None:
             self._enforce_vexdeploy_brand()
             self.set_setting("brand_enforced_v1", "1")
+
+        self.scrub_aytro_branding()
+        self._seed_env_plans()
+
+    def scrub_aytro_branding(self) -> None:
+        """Strip Aytro/AytroCloud strings from branding (legacy panel)."""
+        import re
+
+        pat = re.compile(r"aytro(?:cloud)?", re.IGNORECASE)
+        try:
+            rows = self._fetch(
+                "SELECT profile_name, brand_name, brand_tagline, footer, website, "
+                "support_email, motd_template, logo, discord FROM branding"
+            )
+        except Exception:
+            return
+        for row in rows:
+            updates: dict[str, str] = {}
+            for col in (
+                "brand_name",
+                "brand_tagline",
+                "footer",
+                "website",
+                "support_email",
+                "motd_template",
+                "logo",
+                "discord",
+            ):
+                val = str(row[col] or "")
+                if val and pat.search(val):
+                    new = pat.sub("VexDeploy", val)
+                    new = re.sub(r"\s{2,}", " ", new).strip()
+                    if col == "brand_name" and (
+                        not new or new.lower() in {"vexdeploy", "vex deploy"}
+                    ):
+                        from config import DEFAULT_BRAND
+
+                        new = str(DEFAULT_BRAND["brand_name"])
+                    updates[col] = new
+            if updates:
+                sets = ", ".join(f"{c} = ?" for c in updates)
+                self._exec(
+                    f"UPDATE branding SET {sets}, version = version + 1, updated_at = ? "
+                    f"WHERE profile_name = ?",
+                    (*updates.values(), utcnow(), str(row["profile_name"])),
+                )
+
+    def _seed_env_plans(self) -> None:
+        try:
+            from config import ENV_PLANS
+        except Exception:
+            return
+        if not ENV_PLANS:
+            return
+        for i, p in enumerate(ENV_PLANS):
+            name = str(p.get("name") or "").strip()
+            if not name:
+                continue
+            existing = self._fetch_one(
+                "SELECT plan_id FROM plans WHERE name = ? COLLATE NOCASE", (name,)
+            )
+            if existing:
+                continue
+            self._exec(
+                """
+                INSERT OR IGNORE INTO plans (
+                    plan_id, name, memory_mb, cpus, disk_gb, badge, description,
+                    price, enabled, sort_order, min_invites, source, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?, ?,1,?,?, 'env', ?, ?)
+                """,
+                (
+                    f"pl_{uuid.uuid4().hex[:8]}",
+                    name,
+                    int(p.get("memory_mb") or 1024),
+                    int(p.get("cpus") or 1),
+                    int(p.get("disk_gb") or 10),
+                    str(p.get("badge") or ""),
+                    "",
+                    str(p.get("price") or ""),
+                    int(p.get("sort_order") or i + 1),
+                    0,
+                    utcnow(),
+                    utcnow(),
+                ),
+            )
+
+    # ── plans ──────────────────────────────────────────────
+    def create_plan(
+        self,
+        *,
+        name: str,
+        memory_mb: int,
+        cpus: int,
+        disk_gb: int,
+        badge: str = "",
+        description: str = "",
+        price: str = "",
+        min_invites: int = 0,
+        sort_order: int = 0,
+        source: str = "manual",
+    ) -> str:
+        plan_id = f"pl_{uuid.uuid4().hex[:8]}"
+        if not sort_order:
+            row = self._fetch_one("SELECT COALESCE(MAX(sort_order),0)+1 AS n FROM plans")
+            sort_order = int(row["n"]) if row else 1
+        self._exec(
+            """
+            INSERT INTO plans (
+                plan_id, name, memory_mb, cpus, disk_gb, badge, description,
+                price, enabled, sort_order, min_invites, source, created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,1,?,?,?,?,?)
+            """,
+            (
+                plan_id,
+                name.strip(),
+                int(memory_mb),
+                int(cpus),
+                int(disk_gb),
+                badge.strip(),
+                description.strip(),
+                price.strip(),
+                int(sort_order),
+                int(min_invites),
+                source,
+                utcnow(),
+                utcnow(),
+            ),
+        )
+        return plan_id
+
+    def list_plans(self, *, enabled_only: bool = True) -> list[sqlite3.Row]:
+        if enabled_only:
+            return self._fetch(
+                "SELECT * FROM plans WHERE enabled = 1 ORDER BY sort_order, name"
+            )
+        return self._fetch("SELECT * FROM plans ORDER BY sort_order, name")
+
+    def get_plan(self, name_or_id: str) -> sqlite3.Row | None:
+        return self._fetch_one(
+            "SELECT * FROM plans WHERE plan_id = ? OR name = ? COLLATE NOCASE",
+            (name_or_id, name_or_id),
+        )
+
+    def delete_plan(self, name_or_id: str) -> bool:
+        row = self.get_plan(name_or_id)
+        if not row:
+            return False
+        self._exec("DELETE FROM plans WHERE plan_id = ?", (row["plan_id"],))
+        return True
+
+    def update_plan(self, name_or_id: str, **fields: Any) -> bool:
+        row = self.get_plan(name_or_id)
+        if not row:
+            return False
+        allowed = {
+            "name",
+            "memory_mb",
+            "cpus",
+            "disk_gb",
+            "badge",
+            "description",
+            "price",
+            "enabled",
+            "sort_order",
+            "min_invites",
+        }
+        sets = []
+        params: list[Any] = []
+        for k, v in fields.items():
+            if k not in allowed or v is None:
+                continue
+            sets.append(f"{k} = ?")
+            params.append(int(v) if k in {
+                "memory_mb", "cpus", "disk_gb", "enabled", "sort_order", "min_invites"
+            } else str(v))
+        if not sets:
+            return False
+        sets.append("updated_at = ?")
+        params.append(utcnow())
+        params.append(row["plan_id"])
+        self._exec(f"UPDATE plans SET {', '.join(sets)} WHERE plan_id = ?", tuple(params))
+        return True
 
     def _table_cols(self, table: str) -> list[str]:
         try:
@@ -381,23 +583,66 @@ class Database:
 
     def _enforce_vexdeploy_brand(self) -> None:
         """One-time rewrite of any stored brand name/footer to VexDeploy."""
+        import re
+
         b = dict(DEFAULT_BRAND)
+        aytro = re.compile(r"aytro(?:cloud)?", re.IGNORECASE)
         try:
-            rows = self._fetch("SELECT profile_name, brand_name, footer FROM branding")
+            rows = self._fetch(
+                "SELECT profile_name, brand_name, brand_tagline, footer, website, "
+                "support_email, discord, logo, motd_template FROM branding"
+            )
         except Exception:
             return
         for row in rows:
             profile = str(row["profile_name"])
+            name = str(row["brand_name"] or "")
+            footer = str(row["footer"] or "")
+            tagline = str(row["brand_tagline"] or "")
+            website = str(row["website"] or "")
+            support = str(row["support_email"] or "")
+            discord_link = str(row["discord"] or "")
+            logo = str(row["logo"] or "")
+            template = str(row["motd_template"] or "")
+            dirty = any(
+                aytro.search(x)
+                for x in (name, footer, tagline, website, support, discord_link, logo, template)
+            )
+            if dirty or not name:
+                name = str(b["brand_name"])
+                footer = str(b["footer"])
+                if aytro.search(tagline) or not tagline:
+                    tagline = str(b["brand_tagline"])
+                if aytro.search(website):
+                    website = str(b["website"])
+                if aytro.search(support):
+                    support = str(b["support_email"])
+                if aytro.search(discord_link):
+                    discord_link = str(b["discord"])
+                if aytro.search(logo):
+                    logo = str(b["logo"])
+                if aytro.search(template):
+                    template = str(b["motd_template"])
             self._exec(
                 """
                 UPDATE branding
-                SET brand_name = ?,
-                    footer = ?,
-                    version = version + 1,
-                    updated_at = ?
+                SET brand_name = ?, brand_tagline = ?, footer = ?, website = ?,
+                    support_email = ?, discord = ?, logo = ?, motd_template = ?,
+                    version = version + 1, updated_at = ?
                 WHERE profile_name = ?
                 """,
-                (str(b["brand_name"]), str(b["footer"]), utcnow(), profile),
+                (
+                    name,
+                    tagline,
+                    footer,
+                    website,
+                    support,
+                    discord_link,
+                    logo,
+                    template,
+                    utcnow(),
+                    profile,
+                ),
             )
 
     def _seed_default_brand(self) -> None:
@@ -906,6 +1151,7 @@ class Database:
             "deployment_logs",
             "banned_users",
             "admin_users",
+            "plans",
         ]
         data: dict[str, Any] = {}
         for table in tables:
