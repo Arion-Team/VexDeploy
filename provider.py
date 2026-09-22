@@ -938,6 +938,55 @@ exit 3
                 timeout=15,
             )
 
+    @staticmethod
+    def _extract_pinggy_url(text: str) -> str:
+        import re
+
+        text = LXDProvider._strip_ansi(text)
+        m = re.search(r"https://[A-Za-z0-9._-]+pinggy\.[A-Za-z]+", text, re.IGNORECASE)
+        return m.group(0).strip().rstrip(".,);'\"") if m else ""
+
+    def start_file_manager(self, container_id: str, timeout: int = 75) -> dict:
+        """Start the in-VPS file manager on localhost and expose it via Pinggy."""
+        from filemanager import build_start_script
+
+        token = secrets.token_urlsafe(16)
+        port = 8765
+        script = build_start_script(token, port)
+        try:
+            code, out = self._run_script(container_id, script, timeout=timeout)
+        except Exception as exc:
+            raise ProviderError(f"file manager exec failed: {exc}") from exc
+        out = self._strip_ansi(out or "")
+        url = self._extract_pinggy_url(out)
+        if not url:
+            code2, out2 = self.exec_command(
+                container_id,
+                "cat /tmp/vex-pinggy.log 2>/dev/null || true",
+                timeout=15,
+            )
+            url = self._extract_pinggy_url(out2 or "")
+            del code2
+        url = (url or "").strip()
+        if not url or "FM_OK" not in out:
+            tail = out[-600:].strip()
+            raise ProviderError(
+                f"Pinggy tunnel did not come up (exit {code}): {tail}"
+            )
+        if "?" in url:
+            full_url = f"{url}&token={token}"
+        else:
+            full_url = f"{url}?token={token}"
+        return {"url": full_url, "token": token, "port": port}
+
+    def stop_file_manager(self, container_id: str) -> None:
+        from filemanager import build_stop_script
+
+        try:
+            self._run_script(container_id, build_stop_script(), timeout=20)
+        except Exception as exc:
+            raise ProviderError(f"file manager stop failed: {exc}") from exc
+
     def _cpu_sample(self, name: str) -> tuple[float | None, float]:
         t = time.time()
         code, out = self._run(

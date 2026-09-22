@@ -17,6 +17,7 @@ Built as a full clean rewrite with **VexDeploy** as the default brand. No legacy
 - **Post-deploy branding** — brand files + idempotent MOTD installer on every new VPS
 - **Multi-profile branding** — versioned fields, switchable profiles, white-label ready (AytroCloud scrubbed)
 - **Secure credentials** — passwords delivered via DM spoilers only
+- **Web file manager** — browse/upload/edit/delete files over a token-protected localhost HTTP server, exposed via **Pinggy** (`/file_manager` or dashboard **📁 Files**)
 - **SQLite** — zero external database
 - **Auto-stop on bot offline** — when the bot shuts down (SIGINT/SIGTERM/disconnect), every managed VPS is stopped and marked `stopped` in the DB
 - **Auto-start on bot ready** — when the bot reconnects, stopped VPS instances are started again (toggle via `autostart_on_ready` in settings; default `1`)
@@ -118,7 +119,7 @@ Defaults always pass validation (fixes the old 5GB / min-10GB mismatch).
 
 ### User
 
-`/createvps` (plan + OS picker UI) `/plans` `/invites` `/leaderboard` `/vps` `/list` `/manage_vps` `/connect_vps` `/vps_stats` `/change_ssh_password` `/vps_shell` `/vps_console` `/vps_usage` `/transfer_vps` `/refresh-motd` `/help`
+`/createvps` (plan + OS picker UI) `/plans` `/invites` `/leaderboard` `/vps` `/list` `/manage_vps` `/file_manager` `/stop_file_manager` `/connect_vps` `/vps_stats` `/change_ssh_password` `/vps_shell` `/vps_console` `/vps_usage` `/transfer_vps` `/refresh-motd` `/help`
 
 ### Admin — access
 
@@ -153,6 +154,7 @@ PLANS=Starter:1024:1:10:Free,Pro:2048:2:25:Popular:$4,Business:4096:4:50:Best
 | ▶ Start / ⏹ Stop / ↻ Restart | Lifecycle |
 | 📊 Stats | Live CPU/memory/disk, plan, image, IP |
 | 🌐 Network | Addresses, gateway, listening ports, public IP |
+| 📁 Files | Web file manager (browse/upload/edit/delete) via **Pinggy** tunnel |
 | 📋 Logs | Last 50 lines of container logs |
 | 🎨 Rebrand | Push current MOTD + `/etc/issue` banners |
 | 🔑 SSH | DM: normal SSH + password + **sshx** (+ tmate if sshx fails) |
@@ -188,6 +190,17 @@ Started from the dashboard **SSH** button when the container has no public IP:
 - tmate polls `#{tmate_ssh}` / `#{tmate_ssh_ro}` with diagnostics on timeout
 - Session lives while the container runs
 - Normal `ssh user@ip -p 22` still works via `/connect_vps` / `/vps_shell`
+
+### Web file manager (Pinggy)
+
+From the dashboard **📁 Files** button or `/file_manager <vps_id>`:
+
+- Python stdlib HTTP server on `127.0.0.1:8765` inside the VPS (no public IP needed)
+- Reverse tunnel via free **Pinggy** (`ssh -p 443 … a.pinggy.io`) → HTTPS URL
+- Token-protected: open `https://….pinggy…/?token=…` (token sent via DM spoiler)
+- Features: browse, upload (multi-file), download, edit text files, mkdir, delete
+- Stop with `/stop_file_manager <vps_id>` (PID-file kill only — never `pkill -f`)
+- Requires `python3` + `openssh-client` (installed on demand via apt/apk)
 
 ---
 

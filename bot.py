@@ -558,8 +558,8 @@ async def help_cmd(ctx: commands.Context) -> None:
     )
     user_cmds = (
         "`/createvps` (plan + OS UI) `/plans` `/invites` `/leaderboard` `/vps` `/list` "
-        "`/manage_vps` (dashboard) `/connect_vps` `/vps_stats` `/change_ssh_password` "
-        "`/vps_shell` `/vps_console` "
+        "`/manage_vps` (dashboard) `/file_manager` `/stop_file_manager` `/connect_vps` `/vps_stats` "
+        "`/change_ssh_password` `/vps_shell` `/vps_console` "
         "`/vps_usage` `/transfer_vps` `/refresh-motd` `/help`"
     )
     admin_cmds = (
@@ -1518,6 +1518,31 @@ class ManageVPSView(discord.ui.View):
         embed.add_field(name="SSH port", value=f"`{row['ssh_port'] or 22}`", inline=True)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    @discord.ui.button(label="📁 Files", style=discord.ButtonStyle.secondary, custom_id="manage_files", row=2)
+    async def files_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await self.authorized(interaction):
+            return
+        row = self.get_row()
+        if not row or row["status"] != "running":
+            await interaction.response.send_message("VPS is not running.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            info = await asyncio.to_thread(bot.provider.start_file_manager, row["container_id"])
+        except Exception as exc:
+            await interaction.followup.send(f"❌ File manager failed: {exc}", ephemeral=True)
+            return
+        embed = bot.branding.embed(title=f"File Manager — {self.vps_id}")
+        embed.add_field(name="URL", value=f"[Open](<{info['url']}>)", inline=False)
+        embed.add_field(name="Token", value=f"||`{info['token']}`||", inline=True)
+        embed.add_field(name="Port", value=f"`{info['port']}` (localhost only)", inline=True)
+        embed.set_footer(text="Token is required · stop via /stop_file_manager or VPS restart")
+        try:
+            await interaction.user.send(embed=embed)
+            await interaction.followup.send("📁 File manager URL sent via DM.", ephemeral=True)
+        except discord.HTTPException:
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
     @discord.ui.button(label="🔐 Password", style=discord.ButtonStyle.secondary, custom_id="manage_password", row=2)
     async def password_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not await self.authorized(interaction):
@@ -1698,6 +1723,60 @@ async def manage_vps_cmd(ctx: commands.Context, vps_id: str) -> None:
         view=view,
         ephemeral=True,
     )
+
+
+@bot.hybrid_command(
+    name="file_manager",
+    description="Start the web file manager (upload/download/edit) on your VPS",
+)
+@app_commands.describe(vps_id="VPS identifier")
+async def file_manager_cmd(ctx: commands.Context, vps_id: str) -> None:
+    row = bot.db.get_vps(vps_id)
+    is_admin = slash_admin_check_safe(ctx)
+    if not row or (row["owner_id"] != str(ctx.author.id) and not is_admin):
+        await ctx.send("VPS not found.", ephemeral=True)
+        return
+    if bot.provider is None:
+        await ctx.send("Provider unavailable.", ephemeral=True)
+        return
+    if row["status"] != "running":
+        await ctx.send("VPS is not running.", ephemeral=True)
+        return
+    await ctx.send("Starting file manager…", ephemeral=True)
+    try:
+        info = await asyncio.to_thread(bot.provider.start_file_manager, row["container_id"])
+    except Exception as exc:
+        await ctx.send(f"❌ File manager failed: {exc}", ephemeral=True)
+        return
+    embed = bot.branding.embed(title=f"File Manager — {vps_id}")
+    embed.add_field(name="URL", value=f"[Open](<{info['url']}>)", inline=False)
+    embed.add_field(name="Token", value=f"||`{info['token']}`||", inline=True)
+    embed.add_field(name="Port", value=f"`{info['port']}` (localhost only)", inline=True)
+    embed.set_footer(text="Token required · browse/upload/edit/delete · dashboard 📁 Files")
+    try:
+        await ctx.author.send(embed=embed)
+        await ctx.send("📁 File manager URL sent via DM.", ephemeral=True)
+    except discord.HTTPException:
+        await ctx.send(embed=embed, ephemeral=True)
+
+
+@bot.hybrid_command(name="stop_file_manager", description="Stop the web file manager on your VPS")
+@app_commands.describe(vps_id="VPS identifier")
+async def stop_file_manager_cmd(ctx: commands.Context, vps_id: str) -> None:
+    row = bot.db.get_vps(vps_id)
+    is_admin = slash_admin_check_safe(ctx)
+    if not row or (row["owner_id"] != str(ctx.author.id) and not is_admin):
+        await ctx.send("VPS not found.", ephemeral=True)
+        return
+    if bot.provider is None:
+        await ctx.send("Provider unavailable.", ephemeral=True)
+        return
+    try:
+        await asyncio.to_thread(bot.provider.stop_file_manager, row["container_id"])
+    except Exception as exc:
+        await ctx.send(f"❌ Stop failed: {exc}", ephemeral=True)
+        return
+    await ctx.send(f"📁 File manager stopped for `{vps_id}`.", ephemeral=True)
 
 
 @bot.hybrid_command(name="transfer_vps", description="Transfer a VPS to another user")
