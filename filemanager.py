@@ -122,7 +122,7 @@ def _page(title: str, body: str, flash: str = "", flash_cls: str = "") -> bytes:
 </header>
 {flash_html}
 {body}
-<footer>Bound to 127.0.0.1 · exposed via Pinggy · do not share the full URL with token</footer>
+<footer>Bound to 127.0.0.1 · exposed via localhost.run · do not share the full URL with token</footer>
 </div></body></html>"""
     return doc.encode("utf-8", errors="replace")
 
@@ -446,7 +446,7 @@ if __name__ == "__main__":
 
 
 def build_start_script(token: str, port: int = 8765) -> str:
-    """Official free non-auth Pinggy tunnel: ssh -p 443 -R0:localhost:PORT free.pinggy.io"""
+    """Free non-auth localhost.run tunnel: ssh -R 80:localhost:PORT localhost.run"""
     import base64
 
     fm_b64 = base64.b64encode(FILE_MANAGER_PY.encode("utf-8")).decode("ascii")
@@ -464,8 +464,8 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 command -v python3 >/dev/null 2>&1 || {{ echo NO_PYTHON; exit 2; }}
 if [ -f /tmp/vex-fm.pid ]; then kill "$(cat /tmp/vex-fm.pid)" >/dev/null 2>&1 || true; fi
-if [ -f /tmp/vex-pinggy.pid ]; then kill "$(cat /tmp/vex-pinggy.pid)" >/dev/null 2>&1 || true; fi
-rm -f /tmp/vex-fm.log /tmp/vex-fm.pid /tmp/vex-pinggy.log /tmp/vex-pinggy.pid
+if [ -f /tmp/vex-tunnel.pid ]; then kill "$(cat /tmp/vex-tunnel.pid)" >/dev/null 2>&1 || true; fi
+rm -f /tmp/vex-fm.log /tmp/vex-fm.pid /tmp/vex-tunnel.log /tmp/vex-tunnel.pid
 echo {fm_b64} | base64 -d > /tmp/vex-fm.py || {{ echo FM_WRITE_FAIL; exit 3; }}
 setsid python3 /tmp/vex-fm.py --host 127.0.0.1 --port {p} --token {t} --root / >/tmp/vex-fm.log 2>&1 &
 echo $! > /tmp/vex-fm.pid
@@ -481,16 +481,20 @@ command -v ssh >/dev/null 2>&1 || {{
 printf '#!/bin/sh\\necho\\n' > /tmp/vex-askpass.sh
 chmod +x /tmp/vex-askpass.sh
 export DISPLAY=:0 SSH_ASKPASS=/tmp/vex-askpass.sh SSH_ASKPASS_REQUIRE=force
-SSH_OPTS="-p 443 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o NumberOfPasswordPrompts=1"
-start_pinggy() {{
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o NumberOfPasswordPrompts=1"
+start_tunnel() {{
   HOST="$1"
-  setsid ssh $SSH_OPTS -R0:127.0.0.1:{p} "$HOST" </dev/null >/tmp/vex-pinggy.log 2>&1 &
-  echo $! > /tmp/vex-pinggy.pid
+  setsid ssh $SSH_OPTS -R 80:127.0.0.1:{p} "$HOST" </dev/null >/tmp/vex-tunnel.log 2>&1 &
+  echo $! > /tmp/vex-tunnel.pid
   for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
-    URL=$(grep -Eio 'https://[A-Za-z0-9._-]+\\.pinggy[A-Za-z0-9._-]*\\.[A-Za-z]+' /tmp/vex-pinggy.log 2>/dev/null | head -n1)
+    URL=$(grep -Eio 'https://[A-Za-z0-9._-]+\\.localhost\\.run' /tmp/vex-tunnel.log 2>/dev/null | head -n1)
+    if [ -z "$URL" ]; then
+      HOSTLINE=$(grep -Eio '[A-Za-z0-9._-]+\\.localhost\\.run' /tmp/vex-tunnel.log 2>/dev/null | head -n1)
+      if [ -n "$HOSTLINE" ]; then URL="https://$HOSTLINE"; fi
+    fi
     if [ -n "$URL" ]; then return 0; fi
-    if [ -f /tmp/vex-pinggy.pid ]; then
-      PID=$(cat /tmp/vex-pinggy.pid 2>/dev/null)
+    if [ -f /tmp/vex-tunnel.pid ]; then
+      PID=$(cat /tmp/vex-tunnel.pid 2>/dev/null)
       if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then return 1; fi
     fi
     sleep 1
@@ -498,13 +502,19 @@ start_pinggy() {{
   return 1
 }}
 URL=""
-for HOST in free.pinggy.io a.pinggy.io pinggy.io; do
-  if [ -f /tmp/vex-pinggy.pid ]; then kill "$(cat /tmp/vex-pinggy.pid)" >/dev/null 2>&1 || true; fi
-  if start_pinggy "$HOST"; then
+for HOST in localhost.run nokey@localhost.run; do
+  if [ -f /tmp/vex-tunnel.pid ]; then kill "$(cat /tmp/vex-tunnel.pid)" >/dev/null 2>&1 || true; fi
+  if start_tunnel "$HOST"; then
     break
   fi
 done
-URL=$(grep -Eio 'https://[A-Za-z0-9._-]+\\.pinggy[A-Za-z0-9._-]*\\.[A-Za-z]+' /tmp/vex-pinggy.log 2>/dev/null | head -n1)
+if [ -z "$URL" ]; then
+  URL=$(grep -Eio 'https://[A-Za-z0-9._-]+\\.localhost\\.run' /tmp/vex-tunnel.log 2>/dev/null | head -n1)
+  if [ -z "$URL" ]; then
+    HOSTLINE=$(grep -Eio '[A-Za-z0-9._-]+\\.localhost\\.run' /tmp/vex-tunnel.log 2>/dev/null | head -n1)
+    if [ -n "$HOSTLINE" ]; then URL="https://$HOSTLINE"; fi
+  fi
+fi
 echo "TOKEN={t}"
 echo "PORT={p}"
 echo "URL=${{URL:-}}"
@@ -512,7 +522,7 @@ if [ -n "$URL" ]; then
   echo FM_OK
 else
   echo FM_TUNNEL_FAIL
-  tail -n 40 /tmp/vex-pinggy.log 2>/dev/null || true
+  tail -n 40 /tmp/vex-tunnel.log 2>/dev/null || true
   exit 5
 fi
 """
@@ -523,8 +533,8 @@ def build_stop_script() -> str:
         "set +e; "
         "if [ -f /tmp/vex-fm.pid ]; then kill \"$(cat /tmp/vex-fm.pid)\" >/dev/null 2>&1 || true; "
         "  rm -f /tmp/vex-fm.pid; fi; "
-        "if [ -f /tmp/vex-pinggy.pid ]; then kill \"$(cat /tmp/vex-pinggy.pid)\" >/dev/null 2>&1 || true; "
-        "  rm -f /tmp/vex-pinggy.pid; fi; "
-        "rm -f /tmp/vex-pinggy.log; "
+        "if [ -f /tmp/vex-tunnel.pid ]; then kill \"$(cat /tmp/vex-tunnel.pid)\" >/dev/null 2>&1 || true; "
+        "  rm -f /tmp/vex-tunnel.pid; fi; "
+        "rm -f /tmp/vex-tunnel.log; "
         "echo FM_STOPPED"
     )

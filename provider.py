@@ -939,23 +939,25 @@ exit 3
             )
 
     @staticmethod
-    def _extract_pinggy_url(text: str) -> str:
+    def _extract_tunnel_url(text: str) -> str:
         import re
 
         text = LXDProvider._strip_ansi(text)
-        # free non-auth: https://….run.pinggy-free.link  |  https://….a.pinggy.link
         for pat in (
-            r"https://[A-Za-z0-9._-]+\.pinggy[A-Za-z0-9._-]*\.[A-Za-z]+",
-            r"https://[A-Za-z0-9._-]*pinggy[A-Za-z0-9._-]*\.[A-Za-z]+",
-            r"https://\S*pinggy\S*",
+            r"https://[A-Za-z0-9._-]+\.localhost\.run",
+            r"https://\S*localhost\.run\S*",
+            r"(?<![A-Za-z0-9._/-])[A-Za-z0-9._-]+\.localhost\.run(?![A-Za-z0-9._-])",
         ):
             m = re.search(pat, text, re.IGNORECASE)
             if m:
-                return m.group(0).strip().rstrip(".,);'\"")
+                url = m.group(0).strip().rstrip(".,);'\"")
+                if not url.lower().startswith("http"):
+                    url = f"https://{url}"
+                return url
         return ""
 
     def start_file_manager(self, container_id: str, timeout: int = 75) -> dict:
-        """Start the in-VPS file manager on localhost and expose it via Pinggy."""
+        """Start the in-VPS file manager on localhost and expose it via localhost.run."""
         from filemanager import build_start_script
 
         token = secrets.token_urlsafe(16)
@@ -966,20 +968,20 @@ exit 3
         except Exception as exc:
             raise ProviderError(f"file manager exec failed: {exc}") from exc
         out = self._strip_ansi(out or "")
-        url = self._extract_pinggy_url(out)
+        url = self._extract_tunnel_url(out)
         if not url:
             code2, out2 = self.exec_command(
                 container_id,
-                "cat /tmp/vex-pinggy.log 2>/dev/null || true",
+                "cat /tmp/vex-tunnel.log 2>/dev/null || true",
                 timeout=15,
             )
-            url = self._extract_pinggy_url(out2 or "")
+            url = self._extract_tunnel_url(out2 or "")
             del code2
         url = (url or "").strip()
         if not url or "FM_OK" not in out:
             tail = out[-600:].strip()
             raise ProviderError(
-                f"Pinggy tunnel did not come up (exit {code}): {tail}"
+                f"localhost.run tunnel did not come up (exit {code}): {tail}"
             )
         if "?" in url:
             full_url = f"{url}&token={token}"

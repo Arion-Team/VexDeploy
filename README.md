@@ -17,7 +17,7 @@ Built as a full clean rewrite with **VexDeploy** as the default brand. No legacy
 - **Post-deploy branding** — brand files + idempotent MOTD installer on every new VPS
 - **Multi-profile branding** — versioned fields, switchable profiles, white-label ready (AytroCloud scrubbed)
 - **Secure credentials** — passwords delivered via DM spoilers only
-- **Web file manager** — browse/upload/edit/delete files over a token-protected localhost HTTP server, exposed via **Pinggy** (`/file_manager` or dashboard **📁 Files**)
+- **Web file manager** — browse/upload/edit/delete files over a token-protected localhost HTTP server, exposed via **localhost.run** (`/file_manager` or dashboard **📁 Files**)
 - **SQLite** — zero external database
 - **Auto-stop on bot offline** — when the bot shuts down (SIGINT/SIGTERM/disconnect), every managed VPS is stopped and marked `stopped` in the DB
 - **Auto-start on bot ready** — when the bot reconnects, stopped VPS instances are started again (toggle via `autostart_on_ready` in settings; default `1`)
@@ -154,7 +154,7 @@ PLANS=Starter:1024:1:10:Free,Pro:2048:2:25:Popular:$4,Business:4096:4:50:Best
 | ▶ Start / ⏹ Stop / ↻ Restart | Lifecycle |
 | 📊 Stats | Live CPU/memory/disk, plan, image, IP |
 | 🌐 Network | Addresses, gateway, listening ports, public IP |
-| 📁 Files | Web file manager (browse/upload/edit/delete) via **Pinggy** tunnel |
+| 📁 Files | Web file manager (browse/upload/edit/delete) via **localhost.run** tunnel |
 | 📋 Logs | Last 50 lines of container logs |
 | 🎨 Rebrand | Push current MOTD + `/etc/issue` banners |
 | 🔑 SSH | DM: normal SSH + password + **sshx** (+ tmate if sshx fails) |
@@ -191,14 +191,14 @@ Started from the dashboard **SSH** button when the container has no public IP:
 - Session lives while the container runs
 - Normal `ssh user@ip -p 22` still works via `/connect_vps` / `/vps_shell`
 
-### Web file manager (Pinggy)
+### Web file manager (localhost.run)
 
 From the dashboard **📁 Files** button or `/file_manager <vps_id>`:
 
 - Python stdlib HTTP server on `127.0.0.1:8765` inside the VPS (no public IP needed)
-- Reverse tunnel via free non-auth **Pinggy** (`ssh -p 443 -R0:127.0.0.1:8765 free.pinggy.io`) → HTTPS URL (`*.pinggy-free.link` / `*.a.pinggy.link`)
-- Temp URL: free plan **~60 min**, new URL each restart (no signup required)
-- Token-protected: open `https://….pinggy…/?token=…` (token sent via DM spoiler)
+- Reverse tunnel via free **localhost.run** (`ssh -R 80:127.0.0.1:8765 localhost.run`) → HTTPS URL (`*.localhost.run`)
+- No browser screening/dashboard wall — opens the file manager directly
+- Token-protected: open `https://….localhost.run/?token=…` (token sent via DM spoiler)
 - Features: browse, upload (multi-file), download, edit text files, mkdir, delete
 - Stop with `/stop_file_manager <vps_id>` (PID-file kill only — never `pkill -f`)
 - Requires `python3` + `openssh-client` (installed on demand via apt/apk)
