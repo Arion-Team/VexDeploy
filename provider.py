@@ -31,10 +31,27 @@ LABEL_OWNER = "user.vexdeploy.owner"
 LABEL_VPS_ID = "user.vexdeploy.vps_id"
 
 IMAGE_MAP = {
-    "ubuntu:22.04": "ubuntu:22.04",
-    "ubuntu:24.04": "ubuntu:24.04",
+    "ubuntu:22.04": "images:ubuntu/22.04",
+    "ubuntu:24.04": "images:ubuntu/24.04",
     "debian:12": "images:debian/12",
     "alpine:3.20": "images:alpine/3.20/cloud",
+}
+
+IMAGE_CANDIDATES: dict[str, list[str]] = {
+    "ubuntu:22.04": [
+        "images:ubuntu/22.04",
+        "ubuntu:22.04",
+        "ubuntu:jammy",
+        "images:ubuntu/jammy",
+    ],
+    "ubuntu:24.04": [
+        "images:ubuntu/24.04",
+        "ubuntu:24.04",
+        "ubuntu:noble",
+        "images:ubuntu/noble",
+    ],
+    "debian:12": ["images:debian/12", "images:debian/bookworm"],
+    "alpine:3.20": ["images:alpine/3.20/cloud", "images:alpine/3.20"],
 }
 
 
@@ -236,6 +253,105 @@ class LXDProvider:
             return f"images:{image}"
         return image
 
+    def _image_candidates(self, image: str) -> list[str]:
+        image = (image or "").strip()
+        if image in IMAGE_CANDIDATES:
+            return list(IMAGE_CANDIDATES[image])
+        if image in IMAGE_MAP:
+            primary = IMAGE_MAP[image]
+            alts = IMAGE_CANDIDATES.get(image, [])
+            out = [primary]
+            for alt in alts:
+                if alt not in out:
+                    out.append(alt)
+            return out
+        resolved = self._resolve_image(image)
+        out = [resolved]
+        for key, alts in IMAGE_CANDIDATES.items():
+            if image == key or resolved == IMAGE_MAP.get(key):
+                for alt in alts:
+                    if alt not in out:
+                        out.append(alt)
+        if image not in out:
+            out.append(image)
+        return out
+
+    @staticmethod
+    def _is_missing_image_error(text: str) -> bool:
+        low = (text or "").lower()
+        return any(
+            s in low
+            for s in (
+                "image couldn't be found",
+                "image not found",
+                "failed getting remote image",
+                "failed getting image",
+                "no such image",
+                "remote image info",
+            )
+        )
+
+    def _launch_instance(
+        self,
+        *,
+        image_uri: str,
+        name: str,
+        owner_id: str,
+        memory_mb: int,
+        cpus: int,
+        vps_id: str,
+    ) -> str:
+        """Launch with image fallbacks. Returns the image URI that worked."""
+        args = [
+            "launch",
+            image_uri,
+            name,
+            "-n",
+            self.network_name,
+            "-c",
+            f"limits.memory={int(memory_mb)}MB",
+            "-c",
+            f"limits.cpu={int(cpus)}",
+            "-c",
+            f"{LABEL_MANAGED}=1",
+            "-c",
+            f"{LABEL_OWNER}={str(owner_id)}",
+            "-c",
+            f"{LABEL_VPS_ID}={vps_id or ''}",
+        ]
+        try:
+            self._run(args, timeout=180)
+            return image_uri
+        except ProviderError as exc:
+            self._safe_remove(name)
+            if not self._is_missing_image_error(str(exc)):
+                raise ProviderError(f"Failed to create instance: {exc}") from exc
+            logger.warning("image %s missing, trying fallbacks: %s", image_uri, exc)
+
+        candidates = self._image_candidates(image_uri)
+        if image_uri in candidates:
+            candidates = [c for c in candidates if c != image_uri] + [image_uri]
+        last_err: Exception | None = None
+        for alt in candidates:
+            args_alt = list(args)
+            args_alt[1] = alt
+            try:
+                self._run(args_alt, timeout=180)
+                logger.info("Launched %s with fallback image %s", name, alt)
+                return alt
+            except ProviderError as exc:
+                self._safe_remove(name)
+                last_err = exc
+                if not self._is_missing_image_error(str(exc)):
+                    raise ProviderError(f"Failed to create instance: {exc}") from exc
+                logger.warning("image %s failed: %s", alt, exc)
+                continue
+        raise ProviderError(
+            "Failed to create instance: no usable image "
+            f"(tried {', '.join(candidates)}). "
+            f"Last error: {last_err}"
+        )
+
     # ── create ──────────────────────────────────────────────
     def create_vps(
         self,
@@ -254,32 +370,16 @@ class LXDProvider:
         password = generate_password()
         name = generate_name()
         username = "root"
-        image_uri = self._resolve_image(image)
         notes: list[str] = []
 
-        try:
-            self._run(
-                [
-                    "launch",
-                    image_uri,
-                    name,
-                    "-n",
-                    self.network_name,
-                    "-c",
-                    f"limits.memory={int(memory_mb)}MB",
-                    "-c",
-                    f"limits.cpu={int(cpus)}",
-                    "-c",
-                    f"{LABEL_MANAGED}=1",
-                    "-c",
-                    f"{LABEL_OWNER}={str(owner_id)}",
-                    "-c",
-                    f"{LABEL_VPS_ID}={vps_id or ''}",
-                ],
-                timeout=180,
-            )
-        except ProviderError as exc:
-            raise ProviderError(f"Failed to create instance: {exc}") from exc
+        image_uri = self._launch_instance(
+            image_uri=self._resolve_image(image),
+            name=name,
+            owner_id=owner_id,
+            memory_mb=memory_mb,
+            cpus=cpus,
+            vps_id=vps_id,
+        )
 
         code, _ = self._run(
             [

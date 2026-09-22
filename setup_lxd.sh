@@ -157,21 +157,21 @@ ensure_remotes() {
   local cli
   cli="$(detect_cli)"
 
-  # images (debian/alpine in IMAGE_MAP)
+  # images remote — primary for debian/alpine/ubuntu fallbacks
   ensure_remote "images" "https://images.linuxcontainers.org" "simplestreams"
 
-  # ubuntu cloud images (ubuntu:22.04 / ubuntu:24.04 in IMAGE_MAP)
+  # optional ubuntu cloud-images remote
   if "$cli" remote get-url "ubuntu" >/dev/null 2>&1; then
     ok "remote ubuntu exists"
   else
     ensure_remote "ubuntu" "https://cloud-images.ubuntu.com/releases" "simplestreams" || true
-    if ! "$cli" remote get-url "ubuntu" >/dev/null 2>&1; then
-      ensure_remote "ubuntu" "https://cloud-images.ubuntu.com/daily" "simplestreams" || true
-    fi
-    # some builds use ubuntu-daily name
-    if ! "$cli" remote get-url "ubuntu" >/dev/null 2>&1; then
-      warn "ubuntu remote missing — bot will fall back to images:ubuntu/* if you switch DEFAULT_OS_IMAGE"
-    fi
+  fi
+
+  # prove images: works (bot prefers images:ubuntu/22.04)
+  if "$cli" image list "images:" >/dev/null 2>&1 || "$cli" remote get-url "images" >/dev/null 2>&1; then
+    ok "images remote usable"
+  else
+    warn "images remote may be broken — create may fail"
   fi
 }
 
@@ -200,19 +200,19 @@ ensure_network() {
 warm_images() {
   local cli
   cli="$(detect_cli)"
-  log "Prefetching default image ubuntu:22.04 (best-effort)"
+  log "Prefetching images:ubuntu/22.04 (best-effort)"
 
-  if "$cli" remote get-url "ubuntu" >/dev/null 2>&1; then
-    "$cli" image copy "ubuntu:22.04" "local:" --auto-update=false >/dev/null 2>&1 \
-      || "$cli" image list "ubuntu:22.04" >/dev/null 2>&1 \
-      || true
-  fi
+  "$cli" image list "images:" >/dev/null 2>&1 || true
 
-  # smoke: resolve image listing
-  if "$cli" image list "ubuntu:22.04" >/dev/null 2>&1 || "$cli" image list "images:ubuntu/22.04" >/dev/null 2>&1; then
-    ok "ubuntu image resolvable"
+  if "$cli" image list "images:ubuntu/22.04" >/dev/null 2>&1 \
+    || "$cli" image info "images:ubuntu/22.04" >/dev/null 2>&1 \
+    || "$cli" image list "ubuntu:22.04" >/dev/null 2>&1; then
+    ok "ubuntu 22.04 image resolvable"
   else
-    warn "Could not list ubuntu:22.04 — check network / remotes after install"
+    warn "Could not list ubuntu image — check network / remotes"
+    echo "    Manual test:"
+    echo "      $cli remote list"
+    echo "      $cli image list images:ubuntu/22.04"
   fi
 }
 
