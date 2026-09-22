@@ -88,7 +88,7 @@ class VexBot(commands.Bot):
             logger.warning("Invite priming failed: %s", exc)
 
         try:
-            synced = await self.sync_commands()
+            synced = await self.tree.sync()
             logger.info("Synced %d slash commands", len(synced))
         except discord.HTTPException as exc:
             logger.error("Command sync failed: %s", exc)
