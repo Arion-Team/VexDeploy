@@ -23,7 +23,7 @@ from branding import BrandingManager, render_brand_embed
 from database import Database
 from invites import InviteTracker
 from motd import install_branding_files, run_installer
-from provider import DockerProvider, ProviderError, generate_password, validate_resources
+from provider import LXDProvider, ProviderError, generate_password, validate_resources
 
 # ── logging ──────────────────────────────────────────────────
 logging.basicConfig(
@@ -69,16 +69,16 @@ class VexBot(commands.Bot):
             application_id=None,
         )
         self.db = Database(config.DATABASE_PATH)
-        self.provider: Optional[DockerProvider] = None
+        self.provider: Optional[LXDProvider] = None
         self.invite_tracker = InviteTracker(self)
         self.branding = BrandingManager(self)
 
     async def setup_hook(self) -> None:
         try:
-            self.provider = DockerProvider(config.DOCKER_NETWORK)
-            logger.info("Docker provider initialized")
+            self.provider = LXDProvider(config.LXD_NETWORK)
+            logger.info("LXD provider initialized")
         except ProviderError as exc:
-            logger.error("Docker unavailable: %s", exc)
+            logger.error("LXD unavailable: %s", exc)
             self.provider = None
 
         try:
@@ -290,7 +290,7 @@ async def ensure_slash_admin(interaction: discord.Interaction) -> None:
 def make_exec_fn(container_id: str):
     def exec_fn(payload: str) -> tuple[int, str]:
         if bot.provider is None:
-            raise ProviderError("Docker provider unavailable")
+            raise ProviderError("LXD provider unavailable")
         return bot.provider.exec_command(container_id, payload)
 
     return exec_fn
@@ -380,7 +380,7 @@ async def provision(
         return False, None, "blacklisted"
 
     if bot.provider is None:
-        await edit("❌ Docker provider is unavailable. Contact an admin.")
+        await edit("❌ LXD provider is unavailable. Contact an admin.")
         return False, None, "provider down"
 
     if str(bot.db.get_setting("vps_enabled", "1")) not in {"1", "true", "True"}:
@@ -863,8 +863,8 @@ async def vps_console_cmd(ctx: commands.Context, vps_id: str) -> None:
         await ctx.send("VPS not found.", ephemeral=True)
         return
     await ctx.send(
-        f"Console for `{vps_id}` — use Docker attach on the host:\n"
-        f"```\ndocker exec -it {row['container_id'][:12]} bash\n```",
+        f"Console for `{vps_id}` — use LXC exec on the host:\n"
+        f"```\nlxc exec {row['container_id']} -- bash\n```",
         ephemeral=True,
     )
 
@@ -1780,14 +1780,14 @@ async def admin_stats_cmd(ctx: commands.Context) -> None:
     embed = discord.Embed(title="Admin statistics", color=discord.Color.blurple())
     embed.add_field(name="DB instances", value=str(total), inline=True)
     embed.add_field(name="Running", value=str(running), inline=True)
-    embed.add_field(name="Docker managed", value=str(managed), inline=True)
+    embed.add_field(name="LXD managed", value=str(managed), inline=True)
     embed.add_field(
         name="VPS enabled",
         value=str(bot.db.get_setting("vps_enabled", "1")),
         inline=True,
     )
     embed.add_field(
-        name="Docker",
+        name="LXD",
         value="online" if bot.provider and bot.provider.ping() else "offline",
         inline=True,
     )
@@ -1813,7 +1813,7 @@ async def system_info_cmd(ctx: commands.Context) -> None:
         embed.add_field(name="RAM", value=f"{mem.percent}% ({mem.total // (1<<30)} GB)", inline=True)
         embed.add_field(name="Disk", value=f"{disk.percent}% ({disk.total // (1<<30)} GB)", inline=True)
         embed.add_field(
-            name="Docker",
+            name="LXD",
             value="up" if bot.provider and bot.provider.ping() else "down",
             inline=True,
         )

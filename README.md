@@ -1,6 +1,6 @@
 ﻿# VexDeploy
 
-White-label Discord VPS deployment bot — invite-gated access, clean Docker provisioning, and automatic branded SSH MOTD.
+White-label Discord VPS deployment bot — invite-gated access, clean LXD/Incus provisioning, and automatic branded SSH MOTD.
 
 Built as a full clean rewrite with **VexDeploy** as the default brand. No legacy provider code.
 
@@ -11,7 +11,7 @@ Built as a full clean rewrite with **VexDeploy** as the default brand. No legacy
 - **Invite-gated `/createvps`** — users must hit a configurable invite goal
 - **Invite tracking** — join attribution, leave invalidation, dedup, no credit on ambiguity
 - **Completion alerts** — one-time DM + optional channel ping when goal is reached
-- **Clean Docker provider** — resource limits (RAM/CPU/disk), network, labels, bootstrap SSH
+- **Clean LXD provider** — resource limits (RAM/CPU/disk), network, labels, bootstrap SSH
 - **Post-deploy branding** — brand files + idempotent MOTD installer on every new VPS
 - **Multi-profile branding** — versioned fields, switchable profiles, white-label ready
 - **Secure credentials** — passwords delivered via DM spoilers only
@@ -28,7 +28,7 @@ Discord slash command
         |
 Invite / cooldown / blacklist / limits check
         |
-DockerProvider.create_vps()
+LXDProvider.create_vps()
         |
 SQLite instance row
         |
@@ -43,7 +43,7 @@ Credentials via DM
 bot.py           # Discord bot + all slash commands
 config.py        # defaults, env, resource limits, brand seed
 database.py      # SQLite layer
-provider.py      # clean Docker VPS provider
+provider.py      # clean LXD/Incus VPS provider
 invites.py       # invite tracker + completion notifications
 branding.py      # branding manager + embed
 motd.py          # MOTD generator + idempotent installer
@@ -59,7 +59,7 @@ Runtime files: `vexdeploy.db`, `vexdeploy.log`.
 ## Requirements
 
 - Python 3.10+
-- Docker engine reachable by the bot process
+- LXD or Incus reachable by the bot process (`lxc` or `incus` CLI; set `LXD_CLI` to override)
 - Discord bot token with **Server Members Intent**
 
 ```bash
@@ -88,7 +88,8 @@ DISCORD_TOKEN=
 ADMIN_IDS=1210291131301101618
 ADMIN_ROLE_ID=1376177459870961694
 DATABASE_PATH=vexdeploy.db
-DOCKER_NETWORK=vexdeploy
+LXD_NETWORK=vexdeploy
+LXD_CLI=
 DEFAULT_OS_IMAGE=ubuntu:22.04
 MAX_CONTAINERS=100
 MAX_VPS_PER_USER=3
@@ -228,17 +229,18 @@ Branding failure never fails a created VPS — retry with `/brand-reinstall`.
 
 ---
 
-## Docker provider
+## LXD provider
 
-- Creates labeled containers on network `vexdeploy`
-- Limits: `mem_limit`, `nano_cpus`, best-effort `storage_opt`
-- Bootstraps OpenSSH inside the container and starts `sshd`
+- Creates labeled instances on network `vexdeploy`
+- Limits: `limits.memory`, `limits.cpu`, best-effort root `size=` disk override
+- Bootstraps OpenSSH inside the instance and starts `sshd`
 - Password generated per VPS, stored for DM delivery only
+- Friendly image keys map to remotes: `ubuntu:22.04`, `images:debian/12`, `images:alpine/3.20/cloud`
 
 ```text
-vexdeploy.managed=1
-vexdeploy.owner=<user_id>
-vexdeploy.vps_id=<id>
+user.vexdeploy.managed=1
+user.vexdeploy.owner=<user_id>
+user.vexdeploy.vps_id=<id>
 ```
 
 ---
@@ -258,7 +260,7 @@ vexdeploy.vps_id=<id>
 |---------|-----|
 | Invites not counting | Enable Server Members Intent; bot needs Manage Guild |
 | Disk validation error | Use ≥5GB (`/createvps` defaults to 10GB) |
-| Docker offline | Bot user needs Docker socket access |
+| LXD offline | Bot user needs `lxc`/`incus` access (set `LXD_CLI` if not on PATH) |
 | MOTD missing | `/refresh-motd` or `/brand-reinstall` |
 | Cannot DM credentials | User must allow DMs from server members |
 

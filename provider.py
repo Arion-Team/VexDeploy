@@ -1,18 +1,20 @@
-"""Clean Docker VPS provider — VexDeploy (no legacy code)."""
+"""Clean LXD/Incus VPS provider — VexDeploy (no legacy code)."""
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import secrets
+import shutil
 import string
+import subprocess
 import time
 from dataclasses import dataclass, field
 
-import docker
-from docker.errors import APIError, DockerException, NotFound
-
 from config import (
-    DOCKER_NETWORK,
+    LXD_CLI,
+    LXD_NETWORK,
     MAX_CONTAINERS,
     MAX_CPUS,
     MAX_DISK_GB,
@@ -24,9 +26,16 @@ from config import (
 
 logger = logging.getLogger("vexdeploy.provider")
 
-LABEL_MANAGED = "vexdeploy.managed"
-LABEL_OWNER = "vexdeploy.owner"
-LABEL_VPS_ID = "vexdeploy.vps_id"
+LABEL_MANAGED = "user.vexdeploy.managed"
+LABEL_OWNER = "user.vexdeploy.owner"
+LABEL_VPS_ID = "user.vexdeploy.vps_id"
+
+IMAGE_MAP = {
+    "ubuntu:22.04": "ubuntu:22.04",
+    "ubuntu:24.04": "ubuntu:24.04",
+    "debian:12": "images:debian/12",
+    "alpine:3.20": "images:alpine/3.20/cloud",
+}
 
 
 class ProviderError(Exception):
@@ -47,14 +56,30 @@ def validate_resources(memory_mb: int, cpus: int, disk_gb: int) -> None:
 
 
 def generate_password(length: int = 16) -> str:
-    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
-    # avoid shell-hostile chars in passwords used with chpasswd
     alphabet = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 def generate_name() -> str:
     return f"vex-{secrets.token_hex(4)}"
+
+
+def _detect_cli() -> str:
+    override = (LXD_CLI or "").strip()
+    if override:
+        if shutil.which(override) or os.path.isfile(override):
+            return override
+        raise ProviderError(f"LXD_CLI is set but not executable: {override}")
+    for cand in ("incus", "lxc"):
+        path = shutil.which(cand)
+        if path:
+            return path
+    for path in ("/snap/bin/lxc", "/snap/bin/incus", "/usr/bin/lxc", "/usr/bin/incus"):
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    raise ProviderError(
+        "Neither lxc nor incus CLI found (install LXD/Incus or set LXD_CLI)"
+    )
 
 
 @dataclass
@@ -73,41 +98,143 @@ class VPSResult:
     notes: list[str] = field(default_factory=list)
 
 
-class DockerProvider:
-    """Creates and manages VPS containers on a local Docker engine."""
+class LXDProvider:
+    """Creates and manages VPS instances on local LXD/Incus via the lxc CLI."""
 
-    def __init__(self, network: str = DOCKER_NETWORK) -> None:
-        try:
-            self.client = docker.from_env()
-            self.client.ping()
-        except DockerException as exc:
-            raise ProviderError(f"Docker is not available: {exc}") from exc
+    def __init__(self, network: str = LXD_NETWORK) -> None:
+        self._cli = _detect_cli()
+        self._exec_flags = self._detect_exec_flags()
         self.network_name = network
         self._ensure_network()
-        logger.info("Docker provider ready (network=%s)", self.network_name)
+        logger.info(
+            "LXD provider ready (cli=%s, network=%s, exec=%s)",
+            self._cli,
+            self.network_name,
+            " ".join(self._exec_flags) or "default",
+        )
+
+    def _run(
+        self, args: list[str], *, timeout: int = 60, check: bool = True
+    ) -> tuple[int, str]:
+        cmd = [self._cli, *args]
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                stdin=subprocess.DEVNULL,
+            )
+        except FileNotFoundError as exc:
+            raise ProviderError(f"LXD CLI not found: {self._cli}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise ProviderError(
+                f"LXD command timed out after {timeout}s: {' '.join(args[:4])}"
+            ) from exc
+        out = (proc.stdout or "") + (proc.stderr or "")
+        if check and proc.returncode != 0:
+            raise ProviderError(
+                f"LXD command failed ({proc.returncode}): {out.strip()[:500]}"
+            )
+        return proc.returncode, out
+
+    def _detect_exec_flags(self) -> list[str]:
+        candidates = (
+            ["--mode", "non-interactive"],
+            ["--force-noninteractive"],
+            [],
+        )
+        for flags in candidates:
+            code, out = self._run(
+                ["exec", "__vex_probe__", *flags, "--", "true"],
+                check=False,
+                timeout=15,
+            )
+            low = (out or "").lower()
+            if any(
+                s in low
+                for s in (
+                    "unknown",
+                    "unexpected",
+                    "flag provided",
+                    "invalid argument",
+                    "unknown option",
+                )
+            ):
+                continue
+            return flags
+        return []
 
     def _ensure_network(self) -> None:
+        code, _ = self._run(
+            ["network", "show", self.network_name], check=False, timeout=30
+        )
+        if code == 0:
+            return
         try:
-            self.client.networks.get(self.network_name)
-        except NotFound:
-            self.client.networks.create(
-                self.network_name, driver="bridge", check_duplicate=True
+            self._run(
+                [
+                    "network",
+                    "create",
+                    self.network_name,
+                    "ipv4.address=auto",
+                    "ipv4.nat=true",
+                ],
+                timeout=60,
             )
-            logger.info("Created Docker network %s", self.network_name)
+            logger.info("Created LXD network %s", self.network_name)
+        except ProviderError as exc:
+            code2, _ = self._run(
+                ["network", "show", self.network_name], check=False, timeout=30
+            )
+            if code2 != 0:
+                raise ProviderError(f"Failed to create LXD network: {exc}") from exc
+
+    def _list_all_json(self) -> list:
+        code, out = self._run(["list", "--format", "json"], check=False, timeout=90)
+        if code != 0:
+            raise ProviderError(f"Failed to list instances: {out.strip()[:400]}")
+        try:
+            data = json.loads(out or "[]")
+        except json.JSONDecodeError as exc:
+            raise ProviderError("Failed to parse LXD instance list") from exc
+        return data if isinstance(data, list) else []
+
+    def _list_managed_json(self) -> list:
+        managed = []
+        for inst in self._list_all_json():
+            cfg = inst.get("config") or {}
+            if str(cfg.get(LABEL_MANAGED, "")) == "1":
+                managed.append(inst)
+        return managed
 
     def managed_count(self) -> int:
-        containers = self.client.containers.list(
-            all=True, filters={"label": LABEL_MANAGED}
-        )
-        return len(containers)
+        return len(self._list_managed_json())
 
     def assert_capacity(self, max_containers: int = MAX_CONTAINERS) -> None:
         total = self.managed_count()
         limit = max(1, int(max_containers))
         if total >= limit:
             raise ProviderError(
-                f"Server is at capacity ({total}/{limit} containers)."
+                f"Server is at capacity ({total}/{limit} instances)."
             )
+
+    def list_managed(self) -> list:
+        return self._list_managed_json()
+
+    def _resolve_image(self, image: str) -> str:
+        image = (image or "").strip()
+        if image in IMAGE_MAP:
+            return IMAGE_MAP[image]
+        if ":" in image and not image.startswith("images:"):
+            remote = image.split(":", 1)[0]
+            if remote in {"ubuntu", "ubuntu-daily", "images", "simplestreams"}:
+                return image
+        if "/" in image and not image.startswith("images:"):
+            return f"images:{image}"
+        return image
 
     # ── create ──────────────────────────────────────────────
     def create_vps(
@@ -127,64 +254,58 @@ class DockerProvider:
         password = generate_password()
         name = generate_name()
         username = "root"
-
-        run_kwargs: dict = {
-            "image": image,
-            "name": name,
-            "detach": True,
-            "tty": True,
-            "stdin_open": True,
-            "mem_limit": f"{memory_mb}m",
-            "memswap_limit": f"{memory_mb}m",
-            "nano_cpus": int(cpus) * 1_000_000_000,
-            "network": self.network_name,
-            "restart_policy": {"Name": "unless-stopped"},
-            "labels": {
-                LABEL_MANAGED: "1",
-                LABEL_OWNER: str(owner_id),
-                LABEL_VPS_ID: vps_id or "",
-            },
-            "environment": {
-                "DEBIAN_FRONTEND": "noninteractive",
-                "VEX_PASSWORD": password,
-            },
-            # best-effort rootfs size (requires supported storage driver)
-            "storage_opt": {"size": f"{disk_gb}G"},
-        }
-
-        # bootstrap: install sshd, set root password, start ssh
-        run_kwargs["command"] = [
-            "bash",
-            "-lc",
-            self._bootstrap_script(password),
-        ]
-
+        image_uri = self._resolve_image(image)
         notes: list[str] = []
-        try:
-            container = self.client.containers.run(**run_kwargs)
-        except APIError as exc:
-            # storage_opt often unsupported — retry without
-            if "storage" in str(exc).lower() or "size" in str(exc).lower():
-                notes.append(
-                    f"Disk quota {disk_gb}GB applied as plan metadata (storage-opt unsupported)."
-                )
-                run_kwargs.pop("storage_opt", None)
-                try:
-                    container = self.client.containers.run(**run_kwargs)
-                except APIError as exc2:
-                    raise ProviderError(f"Failed to create container: {exc2}") from exc2
-            else:
-                raise ProviderError(f"Failed to create container: {exc}") from exc
 
         try:
-            container.reload()
-            ip = self._container_ip(container)
-            # wait briefly for sshd
-            self._wait_ssh(container, timeout=90)
-            container.reload()
-            ip = self._container_ip(container) or ip
+            self._run(
+                [
+                    "launch",
+                    image_uri,
+                    name,
+                    "-n",
+                    self.network_name,
+                    "-c",
+                    f"limits.memory={int(memory_mb)}MB",
+                    "-c",
+                    f"limits.cpu={int(cpus)}",
+                    "-c",
+                    f"{LABEL_MANAGED}=1",
+                    "-c",
+                    f"{LABEL_OWNER}={str(owner_id)}",
+                    "-c",
+                    f"{LABEL_VPS_ID}={vps_id or ''}",
+                ],
+                timeout=180,
+            )
+        except ProviderError as exc:
+            raise ProviderError(f"Failed to create instance: {exc}") from exc
+
+        code, _ = self._run(
+            [
+                "config",
+                "device",
+                "override",
+                name,
+                "root",
+                f"size={int(disk_gb)}GB",
+            ],
+            check=False,
+            timeout=30,
+        )
+        if code != 0:
+            notes.append(
+                f"Disk quota {disk_gb}GB may not be enforced on this storage backend."
+            )
+
+        try:
+            self._wait_exec_ready(name, timeout=90)
+            self._bootstrap(name, password)
+            ip = self._instance_ip(name)
+            self._wait_ssh(name, timeout=90)
+            ip = self._instance_ip(name) or ip
             return VPSResult(
-                container_id=container.id,
+                container_id=name,
                 container_name=name,
                 ip_address=ip,
                 ssh_port=22,
@@ -198,85 +319,170 @@ class DockerProvider:
                 notes=notes,
             )
         except Exception:
-            self._safe_remove(container.id)
+            self._safe_remove(name)
             raise
 
     @staticmethod
     def _bootstrap_script(password: str) -> str:
-        # runs as container main process
         return (
             "set -e; "
             "export DEBIAN_FRONTEND=noninteractive; "
             "if command -v apt-get >/dev/null 2>&1; then "
-            "  apt-get update -qq && apt-get install -y -qq openssh-server sudo curl wget ca-certificates; "
+            "  apt-get update -qq && apt-get install -y -qq "
+            "openssh-server sudo curl wget ca-certificates bash; "
             "elif command -v apk >/dev/null 2>&1; then "
-            "  apk add --no-cache openssh-server sudo curl wget; "
+            "  apk add --no-cache openssh-server sudo curl wget bash; "
             "fi; "
             "mkdir -p /var/run/sshd /root/.ssh; "
+            "chmod 700 /root/.ssh; "
             "echo 'root:" + password + "' | chpasswd; "
-            "sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config || true; "
-            "sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config || true; "
-            "sed -i 's/^#\\?PermitEmptyPasswords.*/PermitEmptyPasswords no/' /etc/ssh/sshd_config || true; "
+            "if [ -f /etc/ssh/sshd_config ]; then "
+            "  sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config; "
+            "  sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config; "
+            "  sed -i 's/^#\\?PermitEmptyPasswords.*/PermitEmptyPasswords no/' /etc/ssh/sshd_config; "
+            "fi; "
             "if command -v ssh-keygen >/dev/null 2>&1 && [ ! -f /etc/ssh/ssh_host_rsa_key ]; then "
             "  ssh-keygen -A; "
             "fi; "
-            "exec /usr/sbin/sshd -D -e"
+            "if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then "
+            "  systemctl enable ssh >/dev/null 2>&1 || systemctl enable sshd >/dev/null 2>&1 || true; "
+            "  systemctl restart ssh >/dev/null 2>&1 || systemctl restart sshd >/dev/null 2>&1 || true; "
+            "elif command -v rc-service >/dev/null 2>&1; then "
+            "  rc-update add sshd default >/dev/null 2>&1 || true; "
+            "  rc-service sshd restart >/dev/null 2>&1 || rc-service sshd start >/dev/null 2>&1 || true; "
+            "else "
+            "  (setsid /usr/sbin/sshd -e >/tmp/vex-sshd.log 2>&1 &); "
+            "fi; "
+            "echo BOOTSTRAP_OK"
         )
 
-    def _container_ip(self, container) -> str:
-        container.reload()
-        networks = container.attrs.get("NetworkSettings", {}).get("Networks", {})
-        if self.network_name in networks:
-            ip = networks[self.network_name].get("IPAddress", "")
-            if ip:
-                return ip
-        for info in networks.values():
-            ip = info.get("IPAddress", "")
-            if ip:
-                return ip
-        return container.attrs.get("NetworkSettings", {}).get("IPAddress", "") or ""
-
-    def _wait_ssh(self, container, timeout: int = 90) -> None:
+    def _wait_exec_ready(self, name: str, timeout: int = 90) -> None:
         deadline = time.time() + timeout
         while time.time() < deadline:
-            try:
-                container.reload()
-                if container.status != "running":
-                    raise ProviderError("Container stopped during bootstrap")
-                code, _ = container.exec_run(
-                    ["bash", "-lc", "nc -z 127.0.0.1 22 || ss -lnt | grep -q ':22'"],
-                    demux=True,
+            if self.status(name) == "missing":
+                raise ProviderError("Instance disappeared during startup")
+            code, _ = self._run(
+                ["exec", name, "--", "true"], check=False, timeout=15
+            )
+            if code == 0:
+                return
+            time.sleep(1)
+        raise ProviderError("Instance never became ready for exec")
+
+    def _bootstrap(self, name: str, password: str) -> None:
+        script = self._bootstrap_script(password)
+        args = ["exec", name, *self._exec_flags, "--", "sh", "-lc", script]
+        code, out = self._run(args, check=False, timeout=240)
+        if code != 0:
+            raise ProviderError(
+                f"SSH bootstrap failed (exit {code}): {out.strip()[:500]}"
+            )
+        if "BOOTSTRAP_OK" not in out:
+            logger.warning("bootstrap finished without OK marker: %s", out[-400:])
+
+    def _instance_json(self, name: str) -> dict | None:
+        code, out = self._run(
+            ["list", name, "--format", "json"], check=False, timeout=30
+        )
+        if code != 0:
+            return None
+        try:
+            data = json.loads(out or "[]")
+        except json.JSONDecodeError:
+            return None
+        if isinstance(data, list) and data:
+            return data[0]
+        return None
+
+    def _instance_ip(self, name: str) -> str:
+        inst = self._instance_json(name)
+        if not inst:
+            return ""
+        network = ((inst.get("state") or {}).get("network")) or {}
+        candidates = []
+        for iface, info in network.items():
+            if iface == "lo":
+                continue
+            for addr in info.get("addresses") or []:
+                if addr.get("family") != "inet":
+                    continue
+                ip = str(addr.get("address") or "").strip()
+                if not ip:
+                    continue
+                if addr.get("scope") == "link":
+                    candidates.append(ip)
+                else:
+                    return ip
+        return candidates[0] if candidates else ""
+
+    def _wait_ssh(self, name: str, timeout: int = 90) -> None:
+        probe = (
+            "nc -z 127.0.0.1 22 >/dev/null 2>&1 || "
+            "grep -qE ':0016[[:space:]]' /proc/net/tcp 2>/dev/null || "
+            "ss -lnt 2>/dev/null | grep -q ':22'"
+        )
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            st = self.status(name)
+            if st == "missing":
+                raise ProviderError("Instance stopped during bootstrap")
+            if st == "running":
+                code, _ = self._run(
+                    ["exec", name, *self._exec_flags, "--", "sh", "-lc", probe],
+                    check=False,
+                    timeout=15,
                 )
                 if code == 0:
                     return
-            except DockerException:
-                pass
             time.sleep(2)
-        # non-fatal: SSH may still come up; credentials are still valid
-        logger.warning("SSH readiness check timed out for %s", container.short_id)
+        logger.warning("SSH readiness check timed out for %s", name)
 
     # ── lifecycle ───────────────────────────────────────────
-    def get_container(self, container_id: str):
-        try:
-            return self.client.containers.get(container_id)
-        except NotFound as exc:
-            raise ProviderError("Container not found") from exc
+    def get_container(self, container_id: str) -> str:
+        code, _ = self._run(["info", container_id], check=False, timeout=30)
+        if code != 0:
+            raise ProviderError("Instance not found")
+        return container_id
 
     def start(self, container_id: str) -> None:
-        self.get_container(container_id).start()
+        code, out = self._run(["start", container_id], check=False, timeout=90)
+        if code != 0:
+            low = (out or "").lower()
+            if "already running" in low or "instance is already running" in low:
+                return
+            raise ProviderError(f"Start failed: {out.strip()[:400]}")
 
     def stop(self, container_id: str, timeout: int = 10) -> None:
-        self.get_container(container_id).stop(timeout=timeout)
+        args = ["stop", container_id]
+        if timeout and int(timeout) > 0:
+            args += ["--timeout", str(int(timeout))]
+        else:
+            args.append("--force")
+        code, out = self._run(args, check=False, timeout=max(60, int(timeout) + 30))
+        if code != 0:
+            low = (out or "").lower()
+            if "not running" in low or "already stopped" in low:
+                return
+            raise ProviderError(f"Stop failed: {out.strip()[:400]}")
 
     def restart(self, container_id: str, timeout: int = 10) -> None:
-        self.get_container(container_id).restart(timeout=timeout)
+        args = ["restart", container_id]
+        if timeout and int(timeout) > 0:
+            args += ["--timeout", str(int(timeout))]
+        code, out = self._run(args, check=False, timeout=max(90, int(timeout) + 30))
+        if code != 0:
+            raise ProviderError(f"Restart failed: {out.strip()[:400]}")
 
     def remove(self, container_id: str, force: bool = True) -> None:
-        try:
-            c = self.get_container(container_id)
-            c.remove(force=force)
-        except NotFound:
-            pass
+        args = ["delete", container_id]
+        if force:
+            args.append("--force")
+        code, out = self._run(args, check=False, timeout=90)
+        if code != 0:
+            low = (out or "").lower()
+            if "not found" in low or "does not exist" in low:
+                return
+            raise ProviderError(f"Delete failed: {out.strip()[:400]}")
 
     def _safe_remove(self, container_id: str) -> None:
         try:
@@ -285,34 +491,65 @@ class DockerProvider:
             logger.error("Cleanup failed for %s: %s", container_id, exc)
 
     def status(self, container_id: str) -> str:
-        try:
-            self.get_container(container_id).reload()
-            return self.get_container(container_id).status
-        except ProviderError:
+        code, out = self._run(
+            ["list", container_id, "--format", "csv", "-c", "s"],
+            check=False,
+            timeout=30,
+        )
+        if code != 0 or not out.strip():
             return "missing"
+        raw = out.strip().splitlines()[0].strip().lower()
+        if raw == "running":
+            return "running"
+        if raw in {"stopped", "frozen"}:
+            return "stopped"
+        if raw in {"ready", "started"}:
+            return "running"
+        if raw in {"error", "errored"}:
+            return "missing"
+        return raw or "missing"
 
     def set_password(self, container_id: str, password: str) -> None:
-        c = self.get_container(container_id)
-        code, output = c.exec_run(
-            ["bash", "-lc", f"echo 'root:{password}' | chpasswd"]
+        code, out = self.exec_command(
+            container_id, f"echo 'root:{password}' | chpasswd", timeout=30
         )
         if code != 0:
-            raise ProviderError("Failed to update SSH password inside container")
+            raise ProviderError(
+                "Failed to update SSH password inside instance"
+            )
 
     def exec_command(
         self, container_id: str, command: str, timeout: int = 60
     ) -> tuple[int, str]:
-        c = self.get_container(container_id)
-        code, output = c.exec_run(
-            ["bash", "-lc", command], workdir="/", demux=False
-        )
-        text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else str(output or "")
-        return int(code), text
+        args = [
+            "exec",
+            container_id,
+            *self._exec_flags,
+            "--",
+            "bash",
+            "-lc",
+            command,
+        ]
+        code, out = self._run(args, check=False, timeout=timeout)
+        return code, out
 
     def logs(self, container_id: str, tail: int = 50) -> str:
-        c = self.get_container(container_id)
-        raw = c.logs(tail=max(1, int(tail)), timestamps=False)
-        return raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw or "")
+        n = max(1, int(tail))
+        code, raw = self._run(
+            ["info", container_id, "--show-log"], check=False, timeout=30
+        )
+        if code == 0 and (raw or "").strip():
+            lines = raw.strip().splitlines()
+            return "\n".join(lines[-n:])
+        code2, out = self.exec_command(
+            container_id,
+            "journalctl -n %d --no-pager 2>/dev/null || "
+            "dmesg 2>/dev/null | tail -n %d || true" % (n, n),
+            timeout=30,
+        )
+        if code2 == 0:
+            return out
+        return raw or out or ""
 
     # ── reverse SSH (sshx / tmate) ──────────────────────────
     def _ensure_remote_tools(self, container_id: str) -> str:
@@ -338,7 +575,7 @@ elif command -v yum >/dev/null 2>&1; then
   timeout 60 yum install -y curl ca-certificates >>/tmp/vex-apt.log 2>&1 || true
 fi
 
-# tmate: static binary fallback (Ubuntu docker often lacks universe / package)
+# tmate: static binary fallback (image may lack package / universe)
 if ! command -v tmate >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
   echo 'tmate: trying static binary'
   ARCH=$(uname -m)
@@ -397,13 +634,13 @@ tail -n 30 /tmp/vex-sshx-install.log 2>/dev/null || true
             logger.warning("remote tools partial (exit %s): %s", code, text[-800:])
         return text
 
-    def _run_script(self, container_id: str, script: str, timeout: int = 60) -> tuple[int, str]:
+    def _run_script(
+        self, container_id: str, script: str, timeout: int = 60
+    ) -> tuple[int, str]:
         """Write script to /tmp and execute with an outer timeout (avoids quoting issues)."""
-        # base64 avoids any shell-quoting of the script body
         import base64
 
         b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
-        # split long payloads to avoid argv limits
         wrapper = (
             f"echo {b64} | base64 -d > /tmp/vex-run.sh && "
             f"chmod +x /tmp/vex-run.sh && "
@@ -415,7 +652,6 @@ tail -n 30 /tmp/vex-sshx-install.log 2>/dev/null || true
     def _strip_ansi(text: str) -> str:
         import re
 
-        # ESC [ ... m  and bare ESC sequences
         text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text or "")
         text = re.sub(r"\x1b\][^\x07\x1b]*(\x07|\x1b\\)", "", text)
         return text.replace("\x1b", "")
@@ -424,7 +660,7 @@ tail -n 30 /tmp/vex-sshx-install.log 2>/dev/null || true
     def _extract_sshx_url(text: str) -> str:
         import re
 
-        text = DockerProvider._strip_ansi(text)
+        text = LXDProvider._strip_ansi(text)
         for pat in (
             r"https://sshx\.io/\S+",
             r"ssh\s+\S+@sshx\.io\S*",
@@ -433,7 +669,6 @@ tail -n 30 /tmp/vex-sshx-install.log 2>/dev/null || true
             m = re.search(pat, text, re.IGNORECASE)
             if m:
                 url = m.group(0).strip().rstrip(".,);'\"")
-                # drop trailing reset junk if any survived
                 url = re.sub(r"[\x00-\x1f]+$", "", url)
                 return url
         return ""
@@ -442,7 +677,7 @@ tail -n 30 /tmp/vex-sshx-install.log 2>/dev/null || true
     def _extract_tmate_ssh(text: str) -> str:
         import re
 
-        text = DockerProvider._strip_ansi(text)
+        text = LXDProvider._strip_ansi(text)
         m = re.search(r"ssh\s+\S+@\S+", text)
         if m:
             return m.group(0).strip().rstrip(".,);'\"")
@@ -497,7 +732,6 @@ fi
                 container_id, "cat /tmp/sshx.log 2>/dev/null || true", timeout=15
             )
             url = self._extract_sshx_url(out2 or "")
-        # normalize: always return clean URL (no ANSI / trailing junk)
         url = self._strip_ansi(url or "").strip()
         if not url:
             tail = self._strip_ansi(((out or "") + "\n" + (install_log or "")))[-500:].strip()
@@ -554,7 +788,7 @@ exit 3
             elif code == 124:
                 hint = " Timed out waiting for tmate relay."
             elif "could not resolve" in low or "network" in low or "connection" in low:
-                hint = " Container may have no outbound network to tmate.io."
+                hint = " Instance may have no outbound network to tmate.io."
             elif "NO_TMATE" in (install_log or "") or "tmate not installed" in low:
                 hint = " tmate failed to install (apt package + static binary both failed)."
             tail = (
@@ -569,9 +803,8 @@ exit 3
         return ssh_cmd
 
     def stop_remote_share(self, container_id: str, tool: str = "all") -> None:
-        """Best-effort stop of sshx/tmate sessions inside a container."""
+        """Best-effort stop of sshx/tmate sessions inside an instance."""
         if tool in ("sshx", "all"):
-            # PID file + exact name only — never pkill -f (matches parent shell)
             self.exec_command(
                 container_id,
                 "if [ -f /tmp/sshx.pid ]; then kill \"$(cat /tmp/sshx.pid 2>/dev/null)\" >/dev/null 2>&1 || true; fi; "
@@ -585,43 +818,57 @@ exit 3
                 timeout=15,
             )
 
-    def stats(self, container_id: str) -> dict:
-        c = self.get_container(container_id)
-        c.reload()
-        raw = c.stats(stream=False)
-        cpu = 0.0
-        mem = 0.0
-        try:
-            cpu_delta = (
-                raw["cpu_stats"]["cpu_usage"]["total_usage"]
-                - raw["precpu_stats"]["cpu_usage"]["total_usage"]
-            )
-            system_delta = raw["cpu_stats"].get(
-                "system_cpu_usage", 0
-            ) - raw["precpu_stats"].get("system_cpu_usage", 0)
-            online = raw["cpu_stats"].get("online_cpus") or 1
-            if system_delta > 0:
-                cpu = (cpu_delta / system_delta) * online * 100.0
-            mem = float(raw.get("memory_stats", {}).get("usage", 0))
-        except (KeyError, ZeroDivisionError):
-            pass
-        state = c.attrs.get("State", {})
-        return {
-            "status": c.status,
-            "cpu_percent": round(cpu, 2),
-            "mem_used_mb": round(mem / (1024 * 1024), 2),
-            "started_at": state.get("StartedAt", ""),
-            "pid": state.get("Pid", 0),
-        }
-
-    def list_managed(self) -> list:
-        return self.client.containers.list(
-            all=True, filters={"label": LABEL_MANAGED}
+    def _cpu_sample(self, name: str) -> tuple[float | None, float]:
+        t = time.time()
+        code, out = self._run(
+            ["query", f"/1.0/instances/{name}/state"], check=False, timeout=30
         )
+        if code != 0:
+            return None, t
+        try:
+            data = json.loads(out or "{}")
+        except json.JSONDecodeError:
+            return None, t
+        usage = float((data.get("cpu") or {}).get("usage") or 0)
+        return usage, t
+
+    def stats(self, container_id: str) -> dict:
+        inst = self._instance_json(container_id)
+        if not inst:
+            raise ProviderError("Instance not found")
+        status_raw = str(inst.get("status") or "").lower()
+        status = "running" if status_raw in {"running", "ready"} else status_raw or "unknown"
+        if status_raw in {"frozen"}:
+            status = "stopped"
+        state = inst.get("state") or {}
+        mem = float((state.get("memory") or {}).get("usage") or 0)
+        cpu_percent = 0.0
+        if status == "running":
+            c1, t1 = self._cpu_sample(container_id)
+            time.sleep(0.5)
+            c2, t2 = self._cpu_sample(container_id)
+            if c1 is not None and c2 is not None and t2 > t1:
+                delta_ns = max(0.0, c2 - c1)
+                wall_ns = (t2 - t1) * 1_000_000_000
+                if wall_ns > 0:
+                    cpu_percent = (delta_ns / wall_ns) * 100.0
+        started_at = str(inst.get("created_at") or "")
+        pid = 0
+        try:
+            pid = int(state.get("pid") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        return {
+            "status": status,
+            "cpu_percent": round(cpu_percent, 2),
+            "mem_used_mb": round(mem / (1024 * 1024), 2),
+            "started_at": started_at,
+            "pid": pid,
+        }
 
     def ping(self) -> bool:
         try:
-            self.client.ping()
-            return True
-        except DockerException:
+            code, _ = self._run(["version"], check=False, timeout=15)
+            return code == 0
+        except ProviderError:
             return False

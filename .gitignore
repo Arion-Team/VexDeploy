@@ -10,7 +10,6 @@ id_rsa*
 *.db-wal
 *.db-shm
 vexdeploy_backup.json
-temp_dockerfiles/
 migrations/
 
 # Logs
