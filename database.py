@@ -170,22 +170,8 @@ class Database:
             """
         )
 
-        # branding_version may be missing on older files
-        try:
-            cols = [
-                r[1]
-                for r in self._fetch("PRAGMA table_info(vps_instances)")
-            ]
-            if "branding_version" not in cols:
-                self._exec(
-                    "ALTER TABLE vps_instances ADD COLUMN branding_version INTEGER DEFAULT 0"
-                )
-            if "brand_label" not in cols:
-                self._exec(
-                    "ALTER TABLE vps_instances ADD COLUMN brand_label TEXT DEFAULT ''"
-                )
-        except Exception:
-            pass
+        self._repair_vps_schema()
+        self._repair_deployment_logs_schema()
 
         for key, value in DEFAULT_SETTINGS.items():
             self._exec(
@@ -198,6 +184,221 @@ class Database:
         )
         if not active:
             self._seed_default_brand()
+
+        if self.get_setting("brand_enforced_v1", None) is None:
+            self._enforce_vexdeploy_brand()
+            self.set_setting("brand_enforced_v1", "1")
+
+    def _table_cols(self, table: str) -> list[str]:
+        try:
+            return [r[1] for r in self._fetch(f"PRAGMA table_info({table})")]
+        except Exception:
+            return []
+
+    def _repair_vps_schema(self) -> None:
+        """Bring an old/foreign vps_instances table to the expected schema."""
+        cols = self._table_cols("vps_instances")
+        if not cols:
+            return
+
+        owner_aliases = ("owner_id", "user_id", "discord_id", "creator_id", "owner")
+        found_owner = next((c for c in owner_aliases if c in cols), None)
+        if found_owner and found_owner != "owner_id":
+            try:
+                self._exec(
+                    f"ALTER TABLE vps_instances RENAME COLUMN {found_owner} TO owner_id"
+                )
+                cols = self._table_cols("vps_instances")
+            except Exception:
+                cols = self._table_cols("vps_instances")
+
+        if "owner_id" not in cols:
+            self._rebuild_vps_table(old_cols=cols)
+            return
+
+        add_columns: list[tuple[str, str]] = [
+            ("vps_id", "TEXT"),
+            ("container_id", "TEXT NOT NULL DEFAULT ''"),
+            ("container_name", "TEXT NOT NULL DEFAULT ''"),
+            ("memory_mb", "INTEGER NOT NULL DEFAULT 1024"),
+            ("cpus", "INTEGER NOT NULL DEFAULT 1"),
+            ("disk_gb", "INTEGER NOT NULL DEFAULT 10"),
+            ("os_image", "TEXT NOT NULL DEFAULT 'ubuntu:22.04'"),
+            ("status", "TEXT NOT NULL DEFAULT 'running'"),
+            ("ip_address", "TEXT DEFAULT ''"),
+            ("ssh_port", "INTEGER DEFAULT 0"),
+            ("username", "TEXT DEFAULT 'root'"),
+            ("password_hash", "TEXT DEFAULT ''"),
+            ("password_plain", "TEXT DEFAULT ''"),
+            ("branding_version", "INTEGER DEFAULT 0"),
+            ("brand_label", "TEXT DEFAULT ''"),
+            ("created_at", "TEXT DEFAULT ''"),
+            ("last_seen", "TEXT"),
+        ]
+        cols_set = set(cols)
+        for name, decl in add_columns:
+            if name not in cols_set:
+                try:
+                    self._exec(f"ALTER TABLE vps_instances ADD COLUMN {name} {decl}")
+                except Exception:
+                    pass
+
+        final_cols = self._table_cols("vps_instances")
+        required = {"vps_id", "owner_id", "container_id", "container_name",
+                    "memory_mb", "cpus", "disk_gb", "os_image", "status",
+                    "created_at"}
+        if not required.issubset(set(final_cols)):
+            self._rebuild_vps_table(old_cols=final_cols)
+
+    def _rebuild_vps_table(self, old_cols: list[str] | None = None) -> None:
+        """Recreate vps_instances with the canonical schema, preserving rows if possible."""
+        old_cols = old_cols or []
+        old_rows: list[dict[str, Any]] = []
+        if old_cols:
+            try:
+                old_rows = [dict(r) for r in self._fetch("SELECT * FROM vps_instances")]
+            except Exception:
+                old_rows = []
+
+        id_aliases = ("vps_id", "instance_id", "id", "uuid")
+        owner_aliases = ("owner_id", "user_id", "discord_id", "creator_id", "owner")
+        container_aliases = ("container_id", "docker_id", "container")
+
+        def pick(row: dict[str, Any], aliases: tuple[str, ...], default: str = "") -> Any:
+            for a in aliases:
+                if a in row and row[a] not in (None, ""):
+                    return row[a]
+            for a in aliases:
+                if a in row:
+                    return row[a]
+            return default
+
+        try:
+            self._exec("DROP TABLE IF EXISTS vps_instances")
+        except Exception:
+            pass
+        self._exec(
+            """
+            CREATE TABLE IF NOT EXISTS vps_instances (
+                vps_id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL,
+                container_id TEXT NOT NULL,
+                container_name TEXT NOT NULL,
+                memory_mb INTEGER NOT NULL,
+                cpus INTEGER NOT NULL,
+                disk_gb INTEGER NOT NULL,
+                os_image TEXT NOT NULL,
+                status TEXT NOT NULL,
+                ip_address TEXT DEFAULT '',
+                ssh_port INTEGER DEFAULT 0,
+                username TEXT DEFAULT 'root',
+                password_hash TEXT DEFAULT '',
+                password_plain TEXT DEFAULT '',
+                branding_version INTEGER DEFAULT 0,
+                brand_label TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                last_seen TEXT
+            )
+            """
+        )
+
+        if not old_rows:
+            return
+
+        for i, row in enumerate(old_rows):
+            vps_id = str(pick(row, id_aliases, f"vx_migrated_{i:04d}"))
+            owner_id = str(pick(row, owner_aliases, "0")) or "0"
+            container_id = str(pick(row, container_aliases, "")) or ""
+            try:
+                self._exec(
+                    """
+                    INSERT OR IGNORE INTO vps_instances (
+                        vps_id, owner_id, container_id, container_name,
+                        memory_mb, cpus, disk_gb, os_image, status,
+                        ip_address, ssh_port, username, password_hash, password_plain,
+                        branding_version, brand_label, created_at, last_seen
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        vps_id,
+                        owner_id,
+                        container_id,
+                        str(row.get("container_name") or f"vps-{vps_id}"),
+                        int(row.get("memory_mb") or 1024),
+                        int(row.get("cpus") or row.get("cpu") or 1),
+                        int(row.get("disk_gb") or row.get("disk") or 10),
+                        str(row.get("os_image") or "ubuntu:22.04"),
+                        str(row.get("status") or "running"),
+                        str(row.get("ip_address") or row.get("ip") or ""),
+                        int(row.get("ssh_port") or 0),
+                        str(row.get("username") or "root"),
+                        str(row.get("password_hash") or row.get("password_plain") or ""),
+                        str(row.get("password_plain") or row.get("password_hash") or ""),
+                        int(row.get("branding_version") or 0),
+                        str(row.get("brand_label") or ""),
+                        str(row.get("created_at") or utcnow()),
+                        row.get("last_seen"),
+                    ),
+                )
+            except Exception:
+                continue
+
+    def _repair_deployment_logs_schema(self) -> None:
+        cols = self._table_cols("deployment_logs")
+        if not cols:
+            return
+        if "owner_id" in cols or "user_id" not in cols:
+            if "owner_id" not in cols and "user_id" not in cols:
+                try:
+                    self._exec("DROP TABLE IF EXISTS deployment_logs")
+                    self._exec(
+                        """
+                        CREATE TABLE IF NOT EXISTS deployment_logs (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            owner_id TEXT NOT NULL,
+                            vps_id TEXT DEFAULT '',
+                            stage TEXT NOT NULL,
+                            status TEXT NOT NULL,
+                            message TEXT DEFAULT '',
+                            created_at TEXT NOT NULL
+                        )
+                        """
+                    )
+                except Exception:
+                    pass
+            return
+        try:
+            self._exec(
+                "ALTER TABLE deployment_logs RENAME COLUMN user_id TO owner_id"
+            )
+        except Exception:
+            try:
+                self._exec(
+                    "ALTER TABLE deployment_logs ADD COLUMN owner_id TEXT DEFAULT ''"
+                )
+            except Exception:
+                pass
+
+    def _enforce_vexdeploy_brand(self) -> None:
+        """One-time rewrite of any stored brand name/footer to VexDeploy."""
+        b = dict(DEFAULT_BRAND)
+        try:
+            rows = self._fetch("SELECT profile_name, brand_name, footer FROM branding")
+        except Exception:
+            return
+        for row in rows:
+            profile = str(row["profile_name"])
+            self._exec(
+                """
+                UPDATE branding
+                SET brand_name = ?,
+                    footer = ?,
+                    version = version + 1,
+                    updated_at = ?
+                WHERE profile_name = ?
+                """,
+                (str(b["brand_name"]), str(b["footer"]), utcnow(), profile),
+            )
 
     def _seed_default_brand(self) -> None:
         b = dict(DEFAULT_BRAND)

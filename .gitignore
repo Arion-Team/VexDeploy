@@ -9,7 +9,6 @@ id_rsa*
 *.db-journal
 *.db-wal
 *.db-shm
-lexonodes_backup.pkl
 vexdeploy_backup.json
 temp_dockerfiles/
 migrations/
