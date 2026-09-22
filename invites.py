@@ -24,9 +24,9 @@ class InviteTracker:
         try:
             invites = await guild.invites()
             self._cache[guild.id] = {i.code: i.uses or 0 for i in invites}
-        except discord.Forbidden:
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
             logger.warning(
-                "Missing Manage Guild on %s — invite cache not primed", guild.id
+                "Could not prime invites for guild %s: %s", guild.id, exc
             )
             self._cache.setdefault(guild.id, {})
 
@@ -45,8 +45,8 @@ class InviteTracker:
         try:
             current_invites = await guild.invites()
             current = {i.code: i.uses or 0 for i in current_invites}
-        except discord.Forbidden:
-            logger.warning("Cannot read invites in guild %s", guild.id)
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
+            logger.warning("Cannot read invites in guild %s: %s", guild.id, exc)
             return False
 
         inviter_id: Optional[str] = None
@@ -102,13 +102,19 @@ class InviteTracker:
         return False
 
     async def handle_member_remove(self, member: discord.Member) -> None:
-        inviter_id = self.bot.db.record_leave(str(member.id))
-        if inviter_id:
-            self.bot.db.recompute_eligibility(inviter_id)
-            logger.info(
-                "Member %s left — revoked invite from %s", member.id, inviter_id
-            )
-        await self.prime_guild(member.guild)
+        try:
+            inviter_id = self.bot.db.record_leave(str(member.id))
+            if inviter_id:
+                self.bot.db.recompute_eligibility(inviter_id)
+                logger.info(
+                    "Member %s left — revoked invite from %s", member.id, inviter_id
+                )
+        except Exception:
+            logger.exception("leave bookkeeping failed for %s", member.id)
+        try:
+            await self.prime_guild(member.guild)
+        except Exception:
+            logger.debug("prime after leave failed for guild %s", member.guild.id)
 
     async def _maybe_notify_completion(
         self, guild: discord.Guild, inviter_id: str
