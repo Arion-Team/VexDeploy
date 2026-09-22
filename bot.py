@@ -422,7 +422,8 @@ async def help_cmd(ctx: commands.Context) -> None:
     user_cmds = (
         "`/createvps` `/invites` `/leaderboard` `/vps` `/list` "
         "`/manage_vps` `/connect_vps` `/vps_stats` `/change_ssh_password` "
-        "`/vps_shell` `/vps_console` `/vps_usage` `/transfer_vps` `/refresh-motd` `/help`"
+        "`/vps_shell` `/vps_console` `/sshx` `/tmate` `/stop_sshx` `/stop_tmate` "
+        "`/vps_usage` `/transfer_vps` `/refresh-motd` `/help`"
     )
     admin_cmds = (
         "`/create_vps` `/vps_list` `/delete_vps` `/suspend_vps` `/unsuspend_vps` "
@@ -730,7 +731,7 @@ async def vps_shell_cmd(ctx: commands.Context, vps_id: str) -> None:
     await ctx.send(
         f"SSH shell for `{vps_id}`:\n"
         f"```\nssh {row['username']}@{row['ip_address']} -p {row['ssh_port'] or 22}\n```"
-        f"Password available via `/connect_vps`.",
+        f"Password via `/connect_vps`. No public IP? Use `/sshx` or `/tmate`.",
         ephemeral=True,
     )
 
@@ -747,6 +748,124 @@ async def vps_console_cmd(ctx: commands.Context, vps_id: str) -> None:
         f"```\ndocker exec -it {row['container_id'][:12]} bash\n```",
         ephemeral=True,
     )
+
+
+def _require_user_vps(ctx: commands.Context, vps_id: str):
+    row = bot.db.get_vps(vps_id)
+    if not row or row["owner_id"] != str(ctx.author.id):
+        return None
+    if bot.provider is None:
+        return None
+    return row
+
+
+@bot.hybrid_command(name="sshx", description="Start sshx reverse SSH session for a VPS")
+@app_commands.describe(vps_id="VPS identifier")
+async def sshx_cmd(ctx: commands.Context, vps_id: str) -> None:
+    row = _require_user_vps(ctx, vps_id)
+    if not row:
+        await ctx.send("VPS not found or provider unavailable.", ephemeral=True)
+        return
+    if row["status"] != "running":
+        await ctx.send("VPS is not running.", ephemeral=True)
+        return
+    await ctx.send(f"⏳ Starting **sshx** on `{vps_id}`…", ephemeral=True)
+    try:
+        link = await asyncio.to_thread(bot.provider.start_sshx, row["container_id"])
+    except ProviderError as exc:
+        await ctx.send(f"❌ sshx failed: {exc}", ephemeral=True)
+        return
+    except Exception as exc:
+        await ctx.send(f"❌ sshx failed: {exc}", ephemeral=True)
+        return
+    embed = discord.Embed(
+        title=f"sshx — {vps_id}",
+        description=(
+            "Open this link or run the command to join a shared shell:\n"
+            f"```\n{link}\n```"
+        ),
+        color=discord.Color.green(),
+    )
+    embed.add_field(name="Notes", value="Session lives while the container runs. `/stop_sshx` to end it.", inline=False)
+    embed.set_footer(text=bot.branding.active().get("footer") or "VexDeploy")
+    try:
+        await ctx.author.send(embed=embed)
+        if ctx.interaction:
+            await ctx.send("Sent sshx link via DM.", ephemeral=True)
+        else:
+            await ctx.send("Sent sshx link via DM.")
+    except discord.HTTPException:
+        await ctx.send(embed=embed, ephemeral=True)
+
+
+@bot.hybrid_command(name="tmate", description="Start tmate reverse SSH session for a VPS")
+@app_commands.describe(vps_id="VPS identifier")
+async def tmate_cmd(ctx: commands.Context, vps_id: str) -> None:
+    row = _require_user_vps(ctx, vps_id)
+    if not row:
+        await ctx.send("VPS not found or provider unavailable.", ephemeral=True)
+        return
+    if row["status"] != "running":
+        await ctx.send("VPS is not running.", ephemeral=True)
+        return
+    await ctx.send(f"⏳ Starting **tmate** on `{vps_id}`…", ephemeral=True)
+    try:
+        link = await asyncio.to_thread(bot.provider.start_tmate, row["container_id"])
+    except ProviderError as exc:
+        await ctx.send(f"❌ tmate failed: {exc}", ephemeral=True)
+        return
+    except Exception as exc:
+        await ctx.send(f"❌ tmate failed: {exc}", ephemeral=True)
+        return
+    embed = discord.Embed(
+        title=f"tmate — {vps_id}",
+        description=(
+            "Run this command for read-write SSH access:\n"
+            f"```\n{link}\n```\n"
+            "Read-only session is printed by tmate in-container as well."
+        ),
+        color=discord.Color.green(),
+    )
+    embed.add_field(name="Notes", value="Session lives while the container runs. `/stop_tmate` to end it.", inline=False)
+    embed.set_footer(text=bot.branding.active().get("footer") or "VexDeploy")
+    try:
+        await ctx.author.send(embed=embed)
+        if ctx.interaction:
+            await ctx.send("Sent tmate command via DM.", ephemeral=True)
+        else:
+            await ctx.send("Sent tmate command via DM.")
+    except discord.HTTPException:
+        await ctx.send(embed=embed, ephemeral=True)
+
+
+@bot.hybrid_command(name="stop_sshx", description="Stop an active sshx session on your VPS")
+@app_commands.describe(vps_id="VPS identifier")
+async def stop_sshx_cmd(ctx: commands.Context, vps_id: str) -> None:
+    row = _require_user_vps(ctx, vps_id)
+    if not row:
+        await ctx.send("VPS not found or provider unavailable.", ephemeral=True)
+        return
+    try:
+        await asyncio.to_thread(bot.provider.stop_remote_share, row["container_id"], "sshx")
+    except Exception as exc:
+        await ctx.send(f"❌ {exc}", ephemeral=True)
+        return
+    await ctx.send(f"Stopped sshx on `{vps_id}`.", ephemeral=True)
+
+
+@bot.hybrid_command(name="stop_tmate", description="Stop an active tmate session on your VPS")
+@app_commands.describe(vps_id="VPS identifier")
+async def stop_tmate_cmd(ctx: commands.Context, vps_id: str) -> None:
+    row = _require_user_vps(ctx, vps_id)
+    if not row:
+        await ctx.send("VPS not found or provider unavailable.", ephemeral=True)
+        return
+    try:
+        await asyncio.to_thread(bot.provider.stop_remote_share, row["container_id"], "tmate")
+    except Exception as exc:
+        await ctx.send(f"❌ {exc}", ephemeral=True)
+        return
+    await ctx.send(f"Stopped tmate on `{vps_id}`.", ephemeral=True)
 
 
 @bot.hybrid_command(name="vps_usage", description="Show your VPS usage statistics")
