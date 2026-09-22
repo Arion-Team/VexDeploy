@@ -137,9 +137,28 @@ Defaults always pass validation (fixes the old 5GB / min-10GB mismatch).
 | ▶ Start / ⏹ Stop / ↻ Restart | Lifecycle |
 | 📊 Stats | Live CPU/memory/status |
 | 📋 Logs | Last 50 lines of container logs |
-| 🔄 SSH | DM: normal SSH + password + **sshx** + **tmate** reverse share |
+| 🎨 Rebrand | Push current MOTD + `/etc/issue` banners |
+| 🔑 SSH | DM: normal SSH + password + **sshx** (+ tmate if sshx fails) |
 | 🔁 Reinstall | Two-step confirm — recreates container (same plan/owner), wipes data |
 | 🗑 Delete | Two-step confirm — removes container + DB row |
+
+### Login branding (MOTD + issue)
+
+On SSH login, users see the provider name and host details:
+
+```text
+  VexDeploy — VPS Provider Hosting
+  Instant VPS Hosting
+  ─────────────────────────────
+  Provider   VexDeploy
+  Host / OS / CPU / Memory / Disk / IP …
+  Website / Discord / Support
+  Powered by VexDeploy
+```
+
+Also written to `/etc/issue` + `/etc/issue.net` (console/SSH pre-auth banner)
+and `/etc/vexdeploy/brand`. Re-push anytime with dashboard **🎨 Rebrand** or
+`/refresh-motd` / `/brand-reinstall`.
 
 ### Reverse SSH (sshx / tmate)
 

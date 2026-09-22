@@ -139,6 +139,12 @@ def build_motd_script(brand: dict[str, Any]) -> str:
     support_echo = (
         f'echo "${{B}}Support${{R}}  {support}"' if support else 'echo ""'
     )
+    web_echo = (
+        f'echo "${{B}}Website${{R}}  {website}"' if website else 'echo ""'
+    )
+    disc_echo = (
+        f'echo "${{B}}Discord${{R}}  {discord_url}"' if discord_url else 'echo ""'
+    )
 
     return f"""#!/bin/bash
 # {_MARKER} v1 brand={name}
@@ -165,12 +171,15 @@ IP="$(hostname -I 2>/dev/null | awk '{{print $1}}')"
 LOAD="$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || echo n/a)"
 USERS="$(who 2>/dev/null | wc -l)"
 PROCS="$(ps -e --no-headers 2>/dev/null | wc -l)"
+PROVIDER="{name}"
+TAGLINE="{tagline}"
 
 echo ""
 {logo_export}
-echo "${{P}}${{B}}{name}${{R}}"
+echo "${{P}}${{B}}${{PROVIDER}}${{R}}  ${{S}}— VPS Provider Hosting${{R}}"
 {tagline_echo}
-echo "${{P}}----------------------------------------------${{R}}"
+echo "${{P}}────────────────────────────────────────────────────${{R}}"
+echo "${{B}} Provider${{R}}  $PROVIDER"
 echo "${{B}} Host${{R}}     $HOST"
 echo "${{B}} OS${{R}}       $OS"
 echo "${{B}} Kernel${{R}}   $KERNEL"
@@ -181,12 +190,43 @@ echo "${{B}} Disk${{R}}     $DISK"
 echo "${{B}} Processes${{R}} $PROCS"
 echo "${{B}} Users${{R}}    $USERS online"
 echo "${{B}} IP${{R}}       $IP"
-echo "${{P}}----------------------------------------------${{R}}"
+echo "${{P}}────────────────────────────────────────────────────${{R}}"
+{web_echo}
+{disc_echo}
+{support_echo}
 {links_echo}
 {footer_echo}
-{support_echo}
+echo "${{S}}Powered by ${{PROVIDER}}${{R}}"
 echo ""
 """
+
+
+def build_issue_script(brand: dict[str, Any]) -> str:
+    """Console/login issue banner (no ANSI required — serial/getty)."""
+    name = str(brand.get("brand_name") or "VexDeploy")
+    tagline = str(brand.get("brand_tagline") or "")
+    website = str(brand.get("website") or "")
+    support = str(brand.get("support_email") or "")
+    lines = [
+        "",
+        f"  {name} — VPS Provider Hosting",
+    ]
+    if tagline:
+        lines.append(f"  {tagline}")
+    lines.append("  " + "-" * min(50, max(20, len(name) + 20)))
+    if website:
+        lines.append(f"  Website:  {website}")
+    if support:
+        lines.append(f"  Support:  {support}")
+    lines.append(f"  Powered by {name}")
+    lines.append("")
+    content = "\n".join(lines)
+    b64 = base64.b64encode(content.encode()).decode()
+    return (
+        f"echo {b64} | base64 -d > /etc/issue && "
+        f"echo {b64} | base64 -d > /etc/issue.net && "
+        f"chmod 644 /etc/issue /etc/issue.net && echo ISSUE_OK"
+    )
 
 
 def _script_from_template(
@@ -241,6 +281,7 @@ def name_echo(brand: dict[str, Any]) -> str:
 def build_installer(brand: dict[str, Any]) -> str:
     script = build_motd_script(brand)
     brand_name = str(brand.get("brand_name") or "VexDeploy")
+    issue_cmd = build_issue_script(brand)
     return f"""#!/bin/bash
 set -e
 # {_MARKER} installer brand={brand_name}
@@ -251,6 +292,9 @@ for f in /etc/pam.d/sshd /etc/pam.d/login /etc/motd; do
     cp -a "$f" "$f.backup-brand"
   fi
 done
+
+# branded console/login issue banners
+{issue_cmd} || true
 
 # disable default MOTD scripts (once)
 if [ -d /etc/update-motd.d ] && [ ! -d /etc/update-motd.d.disabled ]; then
@@ -284,6 +328,10 @@ fi
 
 # clear static /etc/motd so PAM dynamic wins
 : > /etc/motd 2>/dev/null || true
+
+# drop brand file for tooling
+mkdir -p /etc/vexdeploy
+echo "{brand_name}" > /etc/vexdeploy/provider
 
 echo "MOTD_OK pam=ok scripts=ok brand={brand_name}"
 """
@@ -319,11 +367,14 @@ def install_branding_files(exec_fn, brand: dict[str, Any]) -> tuple[bool, str]:
     name = str(brand.get("brand_name") or "VexDeploy")
     website = str(brand.get("website") or "")
     support = str(brand.get("support_email") or "")
-    content = f"{name}\n{website}\n{support}\n"
+    tagline = str(brand.get("brand_tagline") or "")
+    content = f"{name}\n{tagline}\n{website}\n{support}\n"
     b64 = base64.b64encode(content.encode()).decode()
+    # brand file + console issue banners
+    issue = build_issue_script(brand)
     cmd = (
         f"mkdir -p /etc/vexdeploy && echo {b64} | base64 -d > /etc/vexdeploy/brand && "
-        f"chmod 644 /etc/vexdeploy/brand && echo BRAND_OK"
+        f"chmod 644 /etc/vexdeploy/brand && {issue} && echo BRAND_OK"
     )
     try:
         code, output = exec_fn(cmd)

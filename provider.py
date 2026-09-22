@@ -412,9 +412,19 @@ tail -n 30 /tmp/vex-sshx-install.log 2>/dev/null || true
         return self.exec_command(container_id, wrapper, timeout=timeout + 15)
 
     @staticmethod
+    def _strip_ansi(text: str) -> str:
+        import re
+
+        # ESC [ ... m  and bare ESC sequences
+        text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text or "")
+        text = re.sub(r"\x1b\][^\x07\x1b]*(\x07|\x1b\\)", "", text)
+        return text.replace("\x1b", "")
+
+    @staticmethod
     def _extract_sshx_url(text: str) -> str:
         import re
 
+        text = DockerProvider._strip_ansi(text)
         for pat in (
             r"https://sshx\.io/\S+",
             r"ssh\s+\S+@sshx\.io\S*",
@@ -422,20 +432,24 @@ tail -n 30 /tmp/vex-sshx-install.log 2>/dev/null || true
         ):
             m = re.search(pat, text, re.IGNORECASE)
             if m:
-                return m.group(0).strip().rstrip(".,)")
+                url = m.group(0).strip().rstrip(".,);'\"")
+                # drop trailing reset junk if any survived
+                url = re.sub(r"[\x00-\x1f]+$", "", url)
+                return url
         return ""
 
     @staticmethod
     def _extract_tmate_ssh(text: str) -> str:
         import re
 
+        text = DockerProvider._strip_ansi(text)
         m = re.search(r"ssh\s+\S+@\S+", text)
         if m:
-            return m.group(0).strip()
+            return m.group(0).strip().rstrip(".,);'\"")
         for line in text.splitlines():
             line = line.strip()
             if line.startswith("ssh ") and "@" in line:
-                return line
+                return line.rstrip(".,);'\"")
         return ""
 
     def start_sshx(self, container_id: str, timeout: int = 45) -> str:
@@ -483,8 +497,10 @@ fi
                 container_id, "cat /tmp/sshx.log 2>/dev/null || true", timeout=15
             )
             url = self._extract_sshx_url(out2 or "")
+        # normalize: always return clean URL (no ANSI / trailing junk)
+        url = self._strip_ansi(url or "").strip()
         if not url:
-            tail = ((out or "") + "\n" + (install_log or ""))[-500:].strip()
+            tail = self._strip_ansi(((out or "") + "\n" + (install_log or "")))[-500:].strip()
             raise ProviderError(
                 "sshx did not return a share link "
                 f"(exit {code}). Install/network issue: {tail}"
@@ -521,16 +537,18 @@ exit 3
             raise ProviderError(f"tmate exec failed: {exc}") from exc
         ssh_cmd = self._extract_tmate_ssh(out or "")
         if not ssh_cmd:
-            for line in (out or "").splitlines():
+            clean = self._strip_ansi(out or "")
+            for line in clean.splitlines():
                 line = line.strip()
                 if line and " " not in line.split("@")[0] and "@" in line and "TMATE" not in line:
                     ssh_cmd = line
                     break
-            if not ssh_cmd and out and "@" in out:
-                ssh_cmd = out.strip().splitlines()[-1].strip()
+            if not ssh_cmd and clean and "@" in clean:
+                ssh_cmd = clean.strip().splitlines()[-1].strip()
+        ssh_cmd = self._strip_ansi(ssh_cmd or "").strip()
         if not ssh_cmd:
             hint = ""
-            low = (out or "").lower()
+            low = self._strip_ansi(out or "").lower()
             if code == 137:
                 hint = " Process was SIGKILLed (OOM or external kill)."
             elif code == 124:
@@ -539,7 +557,9 @@ exit 3
                 hint = " Container may have no outbound network to tmate.io."
             elif "NO_TMATE" in (install_log or "") or "tmate not installed" in low:
                 hint = " tmate failed to install (apt package + static binary both failed)."
-            tail = ((out or "") + "\n" + (install_log or ""))[-400:].strip()
+            tail = (
+                self._strip_ansi((out or "") + "\n" + (install_log or ""))
+            )[-400:].strip()
             raise ProviderError(
                 "tmate did not return an SSH command "
                 f"(exit {code}).{hint} Details: {tail}"

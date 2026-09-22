@@ -1097,6 +1097,42 @@ class ManageVPSView(discord.ui.View):
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    @discord.ui.button(label="🎨 Rebrand", style=discord.ButtonStyle.secondary, custom_id="manage_rebrand", row=1)
+    async def rebrand_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Push current brand MOTD/issue banners onto this VPS."""
+        if not await self.authorized(interaction):
+            return
+        row = self.get_row()
+        assert row is not None
+        if row["status"] != "running":
+            await interaction.response.send_message("VPS is not running.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        brand = bot.branding.active()
+        try:
+            ok_b, out_b = await asyncio.to_thread(
+                install_branding_files, make_exec_fn(row["container_id"]), brand
+            )
+            ok_m, out_m = await asyncio.to_thread(
+                run_installer, make_exec_fn(row["container_id"]), brand
+            )
+        except Exception as exc:
+            await interaction.followup.send(f"❌ Rebrand failed: {exc}", ephemeral=True)
+            return
+        if ok_m or ok_b:
+            bot.db.update_vps_branding(
+                self.vps_id, int(brand.get("version", 1)), bot.branding.brand_label()
+            )
+            await interaction.followup.send(
+                f"🎨 Branding pushed to `{self.vps_id}` — reconnect SSH to see the banner.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                f"❌ Rebrand failed.\n```\n{(out_m or out_b or '')[:1500]}\n```",
+                ephemeral=True,
+            )
+
     @discord.ui.button(label="🔑 SSH", style=discord.ButtonStyle.primary, custom_id="manage_ssh", row=1)
     async def ssh_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not await self.authorized(interaction):
@@ -1124,6 +1160,8 @@ class ManageVPSView(discord.ui.View):
             except Exception as exc2:
                 lines.append(f"tmate: `{exc2}`")
         body = "\n".join(lines)
+        body = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", body)  # strip ANSI
+        body = body.replace("\x1b", "")
         if len(body) > 3900:
             body = body[:3900] + "\n…[truncated]"
         try:
