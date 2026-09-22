@@ -93,6 +93,91 @@ class VexBot(commands.Bot):
         except discord.HTTPException as exc:
             logger.error("Command sync failed: %s", exc)
 
+        self._install_shutdown_signals()
+
+    def _install_shutdown_signals(self) -> None:
+        """Stop all VPS when the process gets SIGINT/SIGTERM/SIGHUP."""
+        import signal
+
+        loop = asyncio.get_running_loop()
+
+        def _make(signame: str):
+            def _handler() -> None:
+                logger.warning("received %s — stopping all VPS", signame)
+                try:
+                    asyncio.ensure_future(self.stop_all_vps(signame), loop=loop)
+                except Exception:
+                    logger.exception("signal stop failed")
+                # then unwind the bot cleanly (close() is idempotent for stops)
+                try:
+                    asyncio.ensure_future(self.close(), loop=loop)
+                except Exception:
+                    logger.exception("signal close failed")
+
+            return _handler
+
+        for name in ("SIGINT", "SIGTERM", "SIGHUP"):
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                loop.add_signal_handler(sig, _make(name))
+            except (NotImplementedError, RuntimeError, OSError):
+                # Windows / unsupported — fall back to sync handler
+                try:
+                    signal.signal(
+                        sig,
+                        lambda s, f, _h=_make(name): _h(),
+                    )
+                except (ValueError, OSError):
+                    pass
+
+    async def stop_all_vps(self, reason: str = "bot offline") -> int:
+        """Gracefully stop every managed VPS container and mark DB stopped."""
+        if self.provider is None:
+            logger.warning("skip VPS shutdown — provider unavailable (%s)", reason)
+            return 0
+        stopped = 0
+        rows = []
+        try:
+            rows = self.db.list_all_vps()
+        except Exception:
+            logger.exception("failed listing VPS for shutdown")
+        for row in rows:
+            cid = row["container_id"]
+            vid = row["vps_id"]
+            try:
+                await asyncio.to_thread(self.provider.stop, cid, 5)
+                self.db.update_vps_status(vid, "stopped")
+                stopped += 1
+                logger.info("stopped %s (%s) — %s", vid, cid[:12], reason)
+            except Exception as exc:
+                logger.warning("could not stop %s: %s", vid, exc)
+                try:
+                    self.db.update_vps_status(vid, "stopped")
+                except Exception:
+                    pass
+        if stopped:
+            try:
+                await self.send_log_channel(
+                    f"⏻ Bot offline ({reason}) — stopped **{stopped}** VPS instance(s)."
+                )
+            except Exception:
+                pass
+        return stopped
+
+    async def close(self) -> None:
+        # Called on clean shutdown / discord disconnect — stop VPS first.
+        try:
+            await self.stop_all_vps("bot closing")
+        except Exception:
+            logger.exception("VPS shutdown on close failed")
+        try:
+            self.db.close()
+        except Exception:
+            pass
+        await super().close()
+
     async def on_ready(self) -> None:
         logger.info("%s has connected to Discord!", self.user)
 
@@ -1032,11 +1117,12 @@ class ManageVPSView(discord.ui.View):
             lines.append(f"**sshx**\n```\n{link}\n```")
         except Exception as exc:
             lines.append(f"sshx: `{exc}`")
-        try:
-            cmd = await asyncio.to_thread(bot.provider.start_tmate, row["container_id"])
-            lines.append(f"**tmate**\n```\n{cmd}\n```")
-        except Exception as exc:
-            lines.append(f"tmate: `{exc}`")
+            # only bother with tmate when sshx failed
+            try:
+                cmd = await asyncio.to_thread(bot.provider.start_tmate, row["container_id"])
+                lines.append(f"**tmate**\n```\n{cmd}\n```")
+            except Exception as exc2:
+                lines.append(f"tmate: `{exc2}`")
         body = "\n".join(lines)
         if len(body) > 3900:
             body = body[:3900] + "\n…[truncated]"
@@ -1789,6 +1875,7 @@ async def brand_update_existing_cmd(ctx: commands.Context) -> None:
 # ── entry ────────────────────────────────────────────────────
 def main() -> None:
     logger.info("Starting VexDeploy…")
+    # Shutdown signals are registered in setup_hook (running loop required).
     bot.run(config.DISCORD_TOKEN, log_handler=None)
 
 

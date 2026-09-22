@@ -16,6 +16,7 @@ Built as a full clean rewrite with **VexDeploy** as the default brand. No legacy
 - **Multi-profile branding** — versioned fields, switchable profiles, white-label ready
 - **Secure credentials** — passwords delivered via DM spoilers only
 - **SQLite** — zero external database
+- **Auto-stop on bot offline** — when the bot shuts down (SIGINT/SIGTERM/disconnect), every managed VPS is stopped and marked `stopped` in the DB
 
 ---
 
