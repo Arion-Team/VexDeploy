@@ -180,6 +180,40 @@ class VexBot(commands.Bot):
 
     async def on_ready(self) -> None:
         logger.info("%s has connected to Discord!", self.user)
+        if not getattr(self, "_autostart_done", False):
+            self._autostart_done = True
+            try:
+                await self.start_all_vps()
+            except Exception:
+                logger.exception("autostart failed")
+
+    async def start_all_vps(self) -> int:
+        """Start every managed VPS that is marked stopped (pairs with stop-on-offline)."""
+        if self.provider is None:
+            return 0
+        flag = str(self.db.get_setting("autostart_on_ready", "1"))
+        if flag not in {"1", "true", "True"}:
+            logger.info("autostart disabled — skipping")
+            return 0
+        started = 0
+        for row in self.db.list_all_vps():
+            if row["status"] not in {"stopped", "suspended"}:
+                continue
+            try:
+                await asyncio.to_thread(self.provider.start, row["container_id"])
+                self.db.update_vps_status(row["vps_id"], "running")
+                started += 1
+                logger.info("autostarted %s", row["vps_id"])
+            except Exception as exc:
+                logger.warning("autostart failed for %s: %s", row["vps_id"], exc)
+        if started:
+            try:
+                await self.send_log_channel(
+                    f"▶ Bot online — started **{started}** VPS instance(s)."
+                )
+            except Exception:
+                pass
+        return started
 
     async def on_member_join(self, member: discord.Member) -> None:
         try:
@@ -506,7 +540,7 @@ async def help_cmd(ctx: commands.Context) -> None:
     )
     user_cmds = (
         "`/createvps` `/invites` `/leaderboard` `/vps` `/list` "
-        "`/manage_vps` `/connect_vps` `/vps_stats` `/change_ssh_password` "
+        "`/manage_vps` (dashboard) `/connect_vps` `/vps_stats` `/change_ssh_password` "
         "`/vps_shell` `/vps_console` "
         "`/vps_usage` `/transfer_vps` `/refresh-motd` `/help`"
     )
@@ -903,6 +937,81 @@ def build_manage_embed(row) -> discord.Embed:
     return embed
 
 
+class PasswordModal(discord.ui.Modal, title="Change SSH password"):
+    new_password = discord.ui.TextInput(
+        label="New password",
+        style=discord.TextStyle.short,
+        min_length=8,
+        max_length=64,
+        required=True,
+    )
+
+    def __init__(self, view: "ManageVPSView") -> None:
+        super().__init__()
+        self.view = view
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        row = self.view.get_row()
+        if not row or bot.provider is None:
+            await interaction.response.send_message("VPS/provider unavailable.", ephemeral=True)
+            return
+        password = str(self.new_password.value).strip()
+        if len(password) < 8:
+            await interaction.response.send_message("Password must be ≥8 chars.", ephemeral=True)
+            return
+        try:
+            await asyncio.to_thread(bot.provider.set_password, row["container_id"], password)
+        except Exception as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+        bot.db.update_vps_password(self.view.vps_id, password)
+        await interaction.response.send_message(
+            f"🔐 Password updated for `{self.view.vps_id}`.", ephemeral=True
+        )
+
+
+class CommandModal(discord.ui.Modal, title="Run command in VPS"):
+    command = discord.ui.TextInput(
+        label="Command",
+        style=discord.TextStyle.paragraph,
+        min_length=1,
+        max_length=1500,
+        required=True,
+        placeholder="e.g. apt update && apt upgrade -y",
+    )
+
+    def __init__(self, view: "ManageVPSView") -> None:
+        super().__init__()
+        self.view = view
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        row = self.view.get_row()
+        if not row or bot.provider is None:
+            await interaction.response.send_message("VPS/provider unavailable.", ephemeral=True)
+            return
+        if row["status"] != "running":
+            await interaction.response.send_message("VPS is not running.", ephemeral=True)
+            return
+        cmd = str(self.command.value)
+        await interaction.response.defer(ephemeral=True)
+        try:
+            code, out = await asyncio.to_thread(
+                bot.provider.exec_command, row["container_id"], cmd, 60
+            )
+        except Exception as exc:
+            await interaction.followup.send(f"❌ {exc}", ephemeral=True)
+            return
+        text = (out or "").strip() or "(no output)"
+        if len(text) > 3800:
+            text = text[:3800] + "\n…[truncated]"
+        embed = discord.Embed(
+            title=f"Command — {self.view.vps_id} (exit {code})",
+            description=f"```\n$ {cmd}\n{text}\n```",
+            color=discord.Color.green() if code == 0 else discord.Color.red(),
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
 class ManageVPSView(discord.ui.View):
     """Interactive dashboard for a single VPS: lifecycle, stats, logs, SSH, reinstall, delete."""
 
@@ -1056,7 +1165,7 @@ class ManageVPSView(discord.ui.View):
     async def restart_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self._lifecycle(interaction, "restart")
 
-    @discord.ui.button(label="📊 Stats", style=discord.ButtonStyle.secondary, custom_id="manage_stats", row=1)
+    @discord.ui.button(label="📊 Stats", style=discord.ButtonStyle.secondary, custom_id="manage_stats", row=0)
     async def stats_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not await self.authorized(interaction):
             return
@@ -1072,9 +1181,85 @@ class ManageVPSView(discord.ui.View):
         embed.add_field(name="Status", value=str(stats.get("status", "?")), inline=True)
         embed.add_field(name="CPU", value=f"{stats.get('cpu_percent', 0)}%", inline=True)
         embed.add_field(name="Memory", value=f"{stats.get('mem_used_mb', 0)} MB", inline=True)
+        row = self.get_row()
+        if row:
+            embed.add_field(
+                name="Plan",
+                value=f"{human_mb(row['memory_mb'])} · {row['cpus']}C · {row['disk_gb']}GB",
+                inline=True,
+            )
+            embed.add_field(name="Image", value=str(row["os_image"]), inline=True)
+            embed.add_field(name="IP", value=str(row["ip_address"] or "—"), inline=True)
+        # live disk via df
+        try:
+            _, df_out = await asyncio.to_thread(
+                bot.provider.exec_command,
+                row["container_id"] if row else "",
+                "df -h / | awk 'NR==2{print $3\"/\"$2\" (\"$5)\"}'",
+                10,
+            )
+            if df_out and df_out.strip():
+                embed.add_field(name="Disk used", value=df_out.strip(), inline=True)
+        except Exception:
+            pass
+        embed.set_footer(text="Refresh via button again for live numbers")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="📋 Logs", style=discord.ButtonStyle.secondary, custom_id="manage_logs", row=1)
+    @discord.ui.button(label="🌐 Network", style=discord.ButtonStyle.secondary, custom_id="manage_network", row=1)
+    async def network_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await self.authorized(interaction):
+            return
+        row = self.get_row()
+        assert row is not None
+        if row["status"] != "running":
+            await interaction.response.send_message("VPS is not running.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        script = (
+            "echo '--- addrs ---'; ip -4 addr show 2>/dev/null | awk '/inet /{print $2}' || "
+            "hostname -I; "
+            "echo '--- gateway ---'; ip route 2>/dev/null | awk '/default/{print $3}'; "
+            "echo '--- listening ---'; "
+            "(ss -lntup 2>/dev/null || netstat -lntup 2>/dev/null || true) | head -n 25; "
+            "echo '--- public ---'; "
+            "timeout 5 curl -fsS ifconfig.me 2>/dev/null || true; echo"
+        )
+        try:
+            code, out = await asyncio.to_thread(
+                bot.provider.exec_command, row["container_id"], script, 20
+            )
+        except Exception as exc:
+            await interaction.followup.send(f"❌ {exc}", ephemeral=True)
+            return
+        text = (out or "").strip() or "(no output)"
+        if len(text) > 3800:
+            text = text[:3800] + "\n…[truncated]"
+        embed = discord.Embed(
+            title=f"Network — {self.vps_id}",
+            description=f"```\n{text}\n```",
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(name="DB IP", value=f"`{row['ip_address'] or '—'}`", inline=True)
+        embed.add_field(name="SSH port", value=f"`{row['ssh_port'] or 22}`", inline=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="🔐 Password", style=discord.ButtonStyle.secondary, custom_id="manage_password", row=2)
+    async def password_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await self.authorized(interaction):
+            return
+        await interaction.response.send_modal(PasswordModal(self))
+
+    @discord.ui.button(label="⚡ Command", style=discord.ButtonStyle.primary, custom_id="manage_command", row=2)
+    async def command_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await self.authorized(interaction):
+            return
+        row = self.get_row()
+        if not row or row["status"] != "running":
+            await interaction.response.send_message("VPS is not running.", ephemeral=True)
+            return
+        await interaction.response.send_modal(CommandModal(self))
+
+    @discord.ui.button(label="📋 Logs", style=discord.ButtonStyle.secondary, custom_id="manage_logs", row=0)
     async def logs_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not await self.authorized(interaction):
             return
@@ -1173,7 +1358,7 @@ class ManageVPSView(discord.ui.View):
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="🔁 Reinstall", style=discord.ButtonStyle.danger, custom_id="manage_reinstall", row=2)
+    @discord.ui.button(label="🔁 Reinstall", style=discord.ButtonStyle.danger, custom_id="manage_reinstall", row=3)
     async def reinstall_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not await self.authorized(interaction):
             return
@@ -1195,7 +1380,7 @@ class ManageVPSView(discord.ui.View):
             f"✅ `{self.vps_id}` reinstalled.", embed=embed, view=self, ephemeral=True
         )
 
-    @discord.ui.button(label="🗑 Delete", style=discord.ButtonStyle.danger, custom_id="manage_delete", row=2)
+    @discord.ui.button(label="🗑 Delete", style=discord.ButtonStyle.danger, custom_id="manage_delete", row=3)
     async def delete_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not await self.authorized(interaction):
             return

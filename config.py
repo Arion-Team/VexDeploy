@@ -57,6 +57,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "default_vps_disk": str(DEFAULT_DISK_GB),
     "log_channel_id": "0",
     "completion_channel_id": "0",
+    "autostart_on_ready": "1",
 }
 
 # White-label brand (admin-editable)

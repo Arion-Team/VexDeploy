@@ -17,6 +17,7 @@ Built as a full clean rewrite with **VexDeploy** as the default brand. No legacy
 - **Secure credentials** — passwords delivered via DM spoilers only
 - **SQLite** — zero external database
 - **Auto-stop on bot offline** — when the bot shuts down (SIGINT/SIGTERM/disconnect), every managed VPS is stopped and marked `stopped` in the DB
+- **Auto-start on bot ready** — when the bot reconnects, stopped VPS instances are started again (toggle via `autostart_on_ready` in settings; default `1`)
 
 ---
 
@@ -135,10 +136,13 @@ Defaults always pass validation (fixes the old 5GB / min-10GB mismatch).
 | Button | Action |
 |--------|--------|
 | ▶ Start / ⏹ Stop / ↻ Restart | Lifecycle |
-| 📊 Stats | Live CPU/memory/status |
+| 📊 Stats | Live CPU/memory/disk, plan, image, IP |
+| 🌐 Network | Addresses, gateway, listening ports, public IP |
 | 📋 Logs | Last 50 lines of container logs |
 | 🎨 Rebrand | Push current MOTD + `/etc/issue` banners |
 | 🔑 SSH | DM: normal SSH + password + **sshx** (+ tmate if sshx fails) |
+| 🔐 Password | Modal — change SSH password in place |
+| ⚡ Command | Modal — run a shell command, show exit code + output |
 | 🔁 Reinstall | Two-step confirm — recreates container (same plan/owner), wipes data |
 | 🗑 Delete | Two-step confirm — removes container + DB row |
 
