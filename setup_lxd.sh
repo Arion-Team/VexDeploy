@@ -125,7 +125,6 @@ ensure_group() {
   if getent group "$grp" >/dev/null 2>&1; then
     if ! id -nG "$group_user" 2>/dev/null | tr ' ' '\n' | grep -qx "$grp"; then
       usermod -aG "$grp" "$group_user"
-      warn "Added $user_group_placeholder" 2>/dev/null || warn "Added $group_user to group $grp (re-login may be needed)"
       warn "Added $group_user to group $grp (re-login may be needed)"
     else
       ok "$group_user already in $grp"
