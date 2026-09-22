@@ -1,0 +1,31 @@
+# Secrets
+.env
+*.pem
+*.key
+id_rsa*
+
+# Runtime data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+lexonodes_backup.pkl
+temp_dockerfiles/
+migrations/
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
