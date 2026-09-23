@@ -85,9 +85,15 @@ sudo bash setup.sh
 
 # also install systemd unit:
 sudo WITH_SYSTEMD=1 bash setup.sh
+
+# skip auto-enter venv shell at the end:
+ENTER_VENV=0 sudo -E bash setup.sh
 ```
 
 Then edit `.env` (set `DISCORD_TOKEN`) and start the bot.
+
+**pip notes:** prefers `.venv`; if venv is unavailable it falls back to  
+`python3 -m pip install --break-system-packages …` (PEP 668 / Debian 12+).
 
 ### Manual
 

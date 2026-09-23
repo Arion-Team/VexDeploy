@@ -9,6 +9,10 @@ INSTALL_DIR="${INSTALL_DIR:-}"
 WITH_LXD="${WITH_LXD:-1}"
 WITH_SYSTEMD="${WITH_SYSTEMD:-0}"
 SKIP_CLONE="${SKIP_CLONE:-0}"
+# drop into activated .venv shell when setup finishes (tty only)
+ENTER_VENV="${ENTER_VENV:-1}"
+# PEP 668 fallback when venv is unavailable
+PIP_BREAK_SYSTEM_PACKAGES="${PIP_BREAK_SYSTEM_PACKAGES:-1}"
 
 log()  { printf '\n==> %s\n' "$*"; }
 ok()   { printf '    OK: %s\n' "$*"; }
@@ -22,6 +26,32 @@ ensure_root() {
 }
 
 apt_ok() { "$@" >/dev/null 2>&1; }
+
+pip_install() {
+  # Prefer active venv pip; else system pip with --break-system-packages (Debian/Ubuntu PEP 668)
+  local extra=()
+  if [[ "$PIP_BREAK_SYSTEM_PACKAGES" == "1" ]]; then
+    extra+=(--break-system-packages)
+  fi
+
+  if [[ -n "${VENV_PIP:-}" && -x "${VENV_PIP}" ]]; then
+    "$VENV_PIP" install "$@" && return 0
+    warn "venv pip failed — retrying with --break-system-packages"
+  fi
+
+  if python3 -m pip --version >/dev/null 2>&1; then
+    python3 -m pip install "${extra[@]}" "$@" && return 0
+    # last try without the flag (older pip)
+    python3 -m pip install "$@" && return 0
+  fi
+
+  if command -v pip3 >/dev/null 2>&1; then
+    pip3 install "${extra[@]}" "$@" && return 0
+    pip3 install "$@" && return 0
+  fi
+
+  die "pip install failed: $*"
+}
 
 detect_os() {
   if [[ -r /etc/os-release ]]; then
@@ -196,18 +226,76 @@ setup_lxd() {
 
 setup_venv() {
   log "Creating Python venv + installing requirements"
-  if [[ ! -d .venv ]]; then
-    python3 -m venv .venv
+  VENV_DIR="$(pwd)/.venv"
+  VENV_PIP=""
+  VENV_MODE="system"
+
+  # ensure pip module exists
+  if ! python3 -m pip --version >/dev/null 2>&1; then
+    apt-get install -y -qq python3-pip python3-venv python3-full 2>/dev/null || true
   fi
-  # shellcheck disable=SC1091
-  source .venv/bin/activate
-  pip install --upgrade pip wheel setuptools
-  if [[ -f requirements.txt ]]; then
-    pip install -r requirements.txt
+
+  if [[ ! -d "$VENV_DIR" ]]; then
+    if ! python3 -m venv "$VENV_DIR" 2>/dev/null; then
+      warn "venv create failed — installing python3-venv"
+      apt-get install -y -qq python3-venv python3-full 2>/dev/null || true
+      python3 -m venv "$VENV_DIR" 2>/dev/null || warn "venv still unavailable"
+    fi
+  fi
+
+  if [[ -x "$VENV_DIR/bin/pip" ]]; then
+    # shellcheck disable=SC1091
+    source "$VENV_DIR/bin/activate"
+    VENV_PIP="$VENV_DIR/bin/pip"
+    VENV_MODE="venv"
+    ok "venv activated: $VENV_DIR"
+    VENV_PIP install --upgrade pip wheel setuptools || \
+      pip_install --upgrade pip wheel setuptools
+    if [[ -f requirements.txt ]]; then
+      VENV_PIP install -r requirements.txt || pip_install -r requirements.txt
+    else
+      VENV_PIP install "discord.py>=2.3.0" "python-dotenv>=1.0.0" "psutil>=5.9.0" \
+        || pip_install "discord.py>=2.3.0" "python-dotenv>=1.0.0" "psutil>=5.9.0"
+    fi
+    ok "deps installed in venv"
   else
-    pip install "discord.py>=2.3.0" "python-dotenv>=1.0.0" "psutil>=5.9.0"
+    warn "No venv — falling back to system pip --break-system-packages"
+    export PIP_BREAK_SYSTEM_PACKAGES=1
+    # some older pip don't know the flag; pip_install also retries without it
+    python3 -m pip install --break-system-packages --upgrade pip wheel setuptools 2>/dev/null \
+      || python3 -m pip install --upgrade pip wheel setuptools || true
+    if [[ -f requirements.txt ]]; then
+      pip_install -r requirements.txt
+    else
+      pip_install "discord.py>=2.3.0" "python-dotenv>=1.0.0" "psutil>=5.9.0"
+    fi
+    VENV_MODE="system-pip"
+    ok "deps installed system-wide (--break-system-packages)"
   fi
-  ok "venv ready: $(pwd)/.venv"
+
+  echo "$VENV_MODE" > "$(pwd)/.vex-venv-mode"
+}
+
+enter_venv_shell() {
+  if [[ "$ENTER_VENV" != "1" ]]; then
+    return 0
+  fi
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    return 0
+  fi
+  if [[ -f "$(pwd)/.venv/bin/activate" ]]; then
+    log "Entering venv shell (.venv) — type 'exit' to leave"
+    # shellcheck disable=SC1091
+    source "$(pwd)/.venv/bin/activate"
+    export VENV_AUTO_ENTERED=1
+    exec bash --noprofile --norc -c '
+      if [ -f .venv/bin/activate ]; then . .venv/bin/activate; fi
+      echo "VexDeploy venv active: python=$(command -v python) pip=$(command -v pip)"
+      echo "Run: python bot.py   |   exit to leave venv"
+      exec bash -i
+    '
+  fi
+  warn "No .venv to enter (system pip mode)"
 }
 
 setup_env() {
@@ -265,20 +353,29 @@ EOF
 }
 
 print_next() {
+  local mode
+  mode="$(cat "$(pwd)/.vex-venv-mode" 2>/dev/null || echo unknown)"
   echo ""
   echo "=============================================="
   echo " Done."
   echo " Working dir: $(pwd)"
+  echo " Python mode: $mode"
   echo ""
   echo " Next:"
   echo "   1) edit .env  → set DISCORD_TOKEN"
-  echo "   2) source .venv/bin/activate"
-  echo "   3) python bot.py"
+  if [[ -f "$(pwd)/.venv/bin/activate" ]]; then
+    echo "   2) source .venv/bin/activate   # auto if ENTER_VENV=1"
+    echo "   3) python bot.py"
+  else
+    echo "   2) python3 bot.py   # system pip (--break-system-packages)"
+    echo "      pip fallback: python3 -m pip install --break-system-packages -r requirements.txt"
+  fi
   echo "      or: systemctl start vexdeploy   (if WITH_SYSTEMD=1)"
   echo ""
   echo " Re-run LXD only:  sudo bash setup_lxd.sh"
   echo " Full re-run:      sudo bash setup.sh"
   echo " With systemd:      sudo WITH_SYSTEMD=1 bash setup.sh"
+  echo " No auto-venv:     ENTER_VENV=0 sudo -E bash setup.sh"
   echo "=============================================="
 }
 
@@ -296,6 +393,7 @@ main() {
   setup_env
   setup_systemd
   print_next
+  enter_venv_shell
 }
 
 main "$@"
