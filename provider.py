@@ -979,15 +979,30 @@ tail -n 20 /tmp/vex-sshx-install.log 2>/dev/null || true
     def _run_script(
         self, container_id: str, script: str, timeout: int = 60
     ) -> tuple[int, str]:
-        """Write script to /tmp and execute with an outer timeout (avoids quoting issues)."""
+        """Write script to a unique /tmp path and run with an outer timeout.
+
+        Decodes via python3 first (byte-exact); falls back to base64(1).
+        A fixed /tmp/vex-run.sh path raced and left "No such file" errors.
+        """
         import base64
 
         b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
-        # sh, not bash — Alpine / minimal images may not ship bash
+        rid = secrets.token_hex(4)
+        path = f"/tmp/vex-run-{rid}.sh"
+        # base64 alphabet has no single quotes — safe to embed
+        decoder = (
+            f"if command -v python3 >/dev/null 2>&1; then "
+            f"python3 -c \"import base64;open('{path}','wb').write(base64.b64decode('{b64}'))\"; "
+            f"else printf '%s' '{b64}' | base64 -d > '{path}'; fi"
+        )
         wrapper = (
-            f"echo {b64} | base64 -d > /tmp/vex-run.sh && "
-            f"chmod +x /tmp/vex-run.sh && "
-            f"timeout {max(5, int(timeout))} sh /tmp/vex-run.sh"
+            f"set +e; {decoder}; "
+            f"if [ ! -s '{path}' ]; then "
+            f"echo SCRIPT_WRITE_FAIL; ls -l '{path}' 2>/dev/null; exit 78; "
+            f"fi; "
+            f"chmod 700 '{path}'; "
+            f"timeout {max(5, int(timeout))} sh '{path}'; "
+            f"ec=$?; rm -f '{path}'; exit $ec"
         )
         return self.exec_command(container_id, wrapper, timeout=timeout + 15)
 

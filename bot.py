@@ -1634,45 +1634,76 @@ class ManageVPSView(discord.ui.View):
             f"Password: ||{row['password_plain']}||",
             "",
         ]
-        tried: list[str] = []
+        notes: list[str] = []
 
-        async def _try(name: str, coro_factory, limit: int):
-            tried.append(name)
+        async def _call(coro_factory, limit: int):
             return await asyncio.wait_for(coro_factory(), timeout=limit)
 
-        # 1) sshx  2) tmate  3) browser shell (ttyd + localhost.run — same tunnel as file manager)
+        # Quick probe: if outbound to sshx is clearly dead, skip relays and use
+        # the localhost.run web shell (same tunnel as file manager).
+        probe_out = ""
+        try:
+            _pc, probe_out = await _call(
+                lambda: asyncio.to_thread(
+                    bot.provider.exec_command,
+                    row["container_id"],
+                    "command -v curl >/dev/null 2>&1 && "
+                    "timeout 4 curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 https://sshx.io "
+                    "|| echo FAIL",
+                    8,
+                ),
+                12,
+            )
+        except Exception:
+            probe_out = ""
+
         link = None
         err_shx = ""
-        try:
-            link = await _try(
-                "sshx",
-                lambda: asyncio.to_thread(bot.provider.start_sshx, row["container_id"]),
-                60,
-            )
-            lines.append(f"**sshx**\n```\n{link}\n```")
-        except asyncio.TimeoutError:
-            err_shx = "timed out after 60s"
-        except Exception as exc:
-            err_shx = str(exc)
+        skip_relays = False
+        ptxt = str(probe_out or "")
+        if "FAIL" in ptxt or "000" in ptxt or ptxt.strip() == "":
+            # empty probe = exec failed; still try sshx once (install may have worked)
+            if "FAIL" in ptxt or "000" in ptxt:
+                skip_relays = True
+                notes.append("_No HTTPS to sshx.io — using web shell._")
 
-        if not link:
+        if not skip_relays:
             try:
-                cmd = await _try(
-                    "tmate",
-                    lambda: asyncio.to_thread(bot.provider.start_tmate, row["container_id"]),
-                    45,
+                link = await _call(
+                    lambda: asyncio.to_thread(
+                        bot.provider.start_sshx, row["container_id"]
+                    ),
+                    55,
                 )
-                lines.append(f"**tmate**\n```\n{cmd}\n```")
-                link = cmd
+                lines.append(f"**sshx**\n```\n{link}\n```")
+            except asyncio.TimeoutError:
+                err_shx = "timed out after 55s"
             except Exception as exc:
-                if err_shx:
-                    lines.append(f"sshx: `{err_shx[:400]}`")
-                lines.append(f"tmate: `{str(exc)[:400]}`")
+                err_shx = str(exc)
+
+            if not link:
+                try:
+                    cmd = await _call(
+                        lambda: asyncio.to_thread(
+                            bot.provider.start_tmate, row["container_id"]
+                        ),
+                        35,
+                    )
+                    lines.append(f"**tmate**\n```\n{cmd}\n```")
+                    link = cmd
+                except Exception as exc:
+                    low = str(exc).lower()
+                    if (
+                        "dns_ssh_tmate=fail" in low
+                        or "tcp_22=fail" in low
+                        or "blocked" in low
+                    ):
+                        skip_relays = True
+                        notes.append("_ssh.tmate.io:22 blocked — using web shell._")
 
         if not link:
             try:
-                web = await _try(
-                    "web",
+                web = await _call(
                     lambda: asyncio.to_thread(
                         bot.provider.start_web_terminal, row["container_id"]
                     ),
@@ -1681,13 +1712,15 @@ class ManageVPSView(discord.ui.View):
                 lines.append("**Web shell (browser)**")
                 lines.append(f"URL: {web['url']}")
                 lines.append(f"User: `vex` · Password: ||{web['token']}||")
-                lines.append("_Open the URL → basic auth prompt → root shell._")
+                lines.append("_Open URL → basic auth vex / token → root shell._")
+                if skip_relays and notes:
+                    lines.append(notes[0])
             except Exception as exc:
-                if err_shx and "sshx:" not in "\n".join(lines):
+                if err_shx:
                     lines.append(f"sshx: `{err_shx[:400]}`")
                 lines.append(f"web shell: `{str(exc)[:400]}`")
                 lines.append(
-                    "_Tip: direct `ssh root@ip` still works if this host allows port 22._"
+                    "_Tip: direct `ssh root@ip -p 22` still works if port 22 is open._"
                 )
 
         body = "\n".join(lines)
