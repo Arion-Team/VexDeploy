@@ -79,6 +79,22 @@ class ProviderError(Exception):
     """Provider-level failure with a user-safe message."""
 
 
+def _cli_snippet(out: str, limit: int = 1200) -> str:
+    """Prefer the tail of CLI output — progress spam sits at the head."""
+    text = (out or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    # collapse huge progress-line noise
+    lines = [ln for ln in text.split("\n") if ln.strip()]
+    if not lines:
+        return ""
+    if len(text) <= limit:
+        return text
+    # keep last lines that often hold the real error
+    tail = "\n".join(lines[-40:])
+    if len(tail) > limit:
+        tail = tail[-limit:]
+    return tail
+
+
 def validate_resources(memory_mb: int, cpus: int, disk_gb: int) -> None:
     if memory_mb < MIN_MEMORY_MB or memory_mb > MAX_MEMORY_MB:
         raise ProviderError(
@@ -167,13 +183,27 @@ class LXDProvider:
         except FileNotFoundError as exc:
             raise ProviderError(f"LXD CLI not found: {self._cli}") from exc
         except subprocess.TimeoutExpired as exc:
+            partial = ""
+            if exc.stdout:
+                partial += (
+                    exc.stdout.decode("utf-8", "replace")
+                    if isinstance(exc.stdout, bytes)
+                    else str(exc.stdout)
+                )
+            if exc.stderr:
+                partial += (
+                    exc.stderr.decode("utf-8", "replace")
+                    if isinstance(exc.stderr, bytes)
+                    else str(exc.stderr)
+                )
             raise ProviderError(
-                f"LXD command timed out after {timeout}s: {' '.join(args[:4])}"
+                f"LXD command timed out after {timeout}s: "
+                f"{' '.join(args[:4])}. {_cli_snippet(partial)}"
             ) from exc
         out = (proc.stdout or "") + (proc.stderr or "")
         if check and proc.returncode != 0:
             raise ProviderError(
-                f"LXD command failed ({proc.returncode}): {out.strip()[:500]}"
+                f"LXD command failed ({proc.returncode}): {_cli_snippet(out)}"
             )
         return proc.returncode, out
 
@@ -305,11 +335,53 @@ class LXDProvider:
                 "image couldn't be found",
                 "image not found",
                 "failed getting remote image",
-                "failed getting image",
+                "failed getting image info",
                 "no such image",
                 "remote image info",
+                "image not available",
+                "not found in remote",
             )
         )
+
+    @staticmethod
+    def _is_transient_error(text: str) -> bool:
+        """Network/disk blips during rootfs download — worth retrying."""
+        low = (text or "").lower()
+        return any(
+            s in low
+            for s in (
+                "connection reset",
+                "connection refused",
+                "connection aborted",
+                "broken pipe",
+                "network is unreachable",
+                "no route to host",
+                "temporary failure",
+                "timed out",
+                "timeout",
+                "unexpected end of",
+                "incomplete read",
+                "error while downloading",
+                "download error",
+                "transfer failed",
+                "tls handshake",
+                "certificate",
+                "http error 5",
+                "http error 429",
+                "server disconnected",
+                "no space left",
+                "disk quota exceeded",
+                "context deadline",
+            )
+        )
+
+    def _launch_once(self, args: list[str], *, timeout: int = 600) -> None:
+        name = args[2] if len(args) > 2 else ""
+        try:
+            self._run(args, timeout=timeout)
+        except ProviderError:
+            self._safe_remove(name)
+            raise
 
     def _launch_instance(
         self,
@@ -321,7 +393,7 @@ class LXDProvider:
         cpus: int,
         vps_id: str,
     ) -> str:
-        """Launch with image fallbacks. Returns the image URI that worked."""
+        """Launch with image fallbacks + one transient retry. Returns working image URI."""
         args = [
             "launch",
             image_uri,
@@ -339,32 +411,57 @@ class LXDProvider:
             "-c",
             f"{LABEL_VPS_ID}={vps_id or ''}",
         ]
-        try:
-            self._run(args, timeout=180)
-            return image_uri
-        except ProviderError as exc:
-            self._safe_remove(name)
-            if not self._is_missing_image_error(str(exc)):
-                raise ProviderError(f"Failed to create instance: {exc}") from exc
-            logger.warning("image %s missing, trying fallbacks: %s", image_uri, exc)
+        # first pull can take a while on cold cache
+        launch_timeout = int(os.environ.get("LXD_LAUNCH_TIMEOUT", "600"))
+
+        last_err: Exception | None = None
+        for attempt in (1, 2):
+            try:
+                self._launch_once(args, timeout=launch_timeout)
+                return image_uri
+            except ProviderError as exc:
+                last_err = exc
+                err = str(exc)
+                if self._is_missing_image_error(err):
+                    logger.warning("image %s missing: %s", image_uri, err)
+                    break
+                if attempt < 2 and self._is_transient_error(err):
+                    logger.warning(
+                        "launch %s transient failure (attempt %s): %s",
+                        name,
+                        attempt,
+                        err,
+                    )
+                    time.sleep(3)
+                    continue
+                raise ProviderError(f"Failed to create instance: {err}") from exc
 
         candidates = self._image_candidates(image_uri)
         if image_uri in candidates:
             candidates = [c for c in candidates if c != image_uri] + [image_uri]
-        last_err: Exception | None = None
         for alt in candidates:
             args_alt = list(args)
             args_alt[1] = alt
             try:
-                self._run(args_alt, timeout=180)
+                self._launch_once(args_alt, timeout=launch_timeout)
                 logger.info("Launched %s with fallback image %s", name, alt)
                 return alt
             except ProviderError as exc:
-                self._safe_remove(name)
                 last_err = exc
-                if not self._is_missing_image_error(str(exc)):
-                    raise ProviderError(f"Failed to create instance: {exc}") from exc
-                logger.warning("image %s failed: %s", alt, exc)
+                err = str(exc)
+                if self._is_transient_error(err):
+                    logger.warning("fallback %s transient: %s", alt, err)
+                    try:
+                        time.sleep(3)
+                        self._launch_once(args_alt, timeout=launch_timeout)
+                        logger.info("Launched %s with %s after retry", name, alt)
+                        return alt
+                    except ProviderError as exc2:
+                        last_err = exc2
+                        err = str(exc2)
+                if not self._is_missing_image_error(err):
+                    raise ProviderError(f"Failed to create instance: {err}") from exc
+                logger.warning("image %s failed: %s", alt, err)
                 continue
         raise ProviderError(
             "Failed to create instance: no usable image "
@@ -605,6 +702,8 @@ class LXDProvider:
             raise ProviderError(f"Delete failed: {out.strip()[:400]}")
 
     def _safe_remove(self, container_id: str) -> None:
+        if not container_id:
+            return
         try:
             self.remove(container_id, force=True)
         except Exception as exc:
