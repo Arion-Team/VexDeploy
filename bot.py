@@ -1633,40 +1633,63 @@ class ManageVPSView(discord.ui.View):
             f"```\nssh {row['username']}@{row['ip_address']} -p {row['ssh_port'] or 22}\n```",
             f"Password: ||{row['password_plain']}||",
             "",
-            "_Preparing reverse shell (sshx)… first click installs tools (~10–40s)._",
         ]
+        tried: list[str] = []
+
+        async def _try(name: str, coro_factory, limit: int):
+            tried.append(name)
+            return await asyncio.wait_for(coro_factory(), timeout=limit)
+
+        # 1) sshx  2) tmate  3) browser shell (ttyd + localhost.run — same tunnel as file manager)
+        link = None
+        err_shx = ""
         try:
-            link = await asyncio.wait_for(
-                asyncio.to_thread(bot.provider.start_sshx, row["container_id"]),
-                timeout=90,
+            link = await _try(
+                "sshx",
+                lambda: asyncio.to_thread(bot.provider.start_sshx, row["container_id"]),
+                60,
             )
-            lines = lines[:4]
             lines.append(f"**sshx**\n```\n{link}\n```")
         except asyncio.TimeoutError:
-            lines = lines[:4]
-            lines.append("sshx: timed out after 90s (install/network).")
-            try:
-                cmd = await asyncio.wait_for(
-                    asyncio.to_thread(bot.provider.start_tmate, row["container_id"]),
-                    timeout=45,
-                )
-                lines.append(f"**tmate**\n```\n{cmd}\n```")
-            except Exception as exc2:
-                lines.append(f"tmate: `{exc2}`")
+            err_shx = "timed out after 60s"
         except Exception as exc:
-            lines = lines[:4]
-            lines.append(f"sshx: `{exc}`")
-            # only bother with tmate when sshx failed (tools install is cached)
+            err_shx = str(exc)
+
+        if not link:
             try:
-                cmd = await asyncio.wait_for(
-                    asyncio.to_thread(bot.provider.start_tmate, row["container_id"]),
-                    timeout=45,
+                cmd = await _try(
+                    "tmate",
+                    lambda: asyncio.to_thread(bot.provider.start_tmate, row["container_id"]),
+                    45,
                 )
                 lines.append(f"**tmate**\n```\n{cmd}\n```")
-            except asyncio.TimeoutError:
-                lines.append("tmate: timed out after 45s.")
-            except Exception as exc2:
-                lines.append(f"tmate: `{exc2}`")
+                link = cmd
+            except Exception as exc:
+                if err_shx:
+                    lines.append(f"sshx: `{err_shx[:400]}`")
+                lines.append(f"tmate: `{str(exc)[:400]}`")
+
+        if not link:
+            try:
+                web = await _try(
+                    "web",
+                    lambda: asyncio.to_thread(
+                        bot.provider.start_web_terminal, row["container_id"]
+                    ),
+                    80,
+                )
+                lines.append("**Web shell (browser)**")
+                lines.append(f"URL: {web['url']}")
+                lines.append(f"User: `vex` · Password: ||{web['token']}||")
+                lines.append("_Open the URL → basic auth prompt → root shell._")
+            except Exception as exc:
+                if err_shx and "sshx:" not in "\n".join(lines):
+                    lines.append(f"sshx: `{err_shx[:400]}`")
+                lines.append(f"web shell: `{str(exc)[:400]}`")
+                lines.append(
+                    "_Tip: direct `ssh root@ip` still works if this host allows port 22._"
+                )
+
         body = "\n".join(lines)
         body = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", body)  # strip ANSI
         body = body.replace("\x1b", "")

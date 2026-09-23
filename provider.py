@@ -1035,23 +1035,39 @@ tail -n 20 /tmp/vex-sshx-install.log 2>/dev/null || true
 
         Uses the official installer (GitHub releases have no binary assets).
         Detaches via PID file only — never pkill -f (that SIGTERMs the launcher).
+        stdout is often fully buffered without a TTY — run under `script`/stdbuf
+        so the share link actually hits /tmp/sshx.log.
         """
         install_log = self._ensure_remote_tools(container_id)
 
         script = f"""set +e
 if [ -f /tmp/sshx.pid ]; then kill "$(cat /tmp/sshx.pid 2>/dev/null)" >/dev/null 2>&1 || true; fi
 pkill -x sshx >/dev/null 2>&1 || true
-rm -f /tmp/sshx.log /tmp/sshx.pid /tmp/sshx.out
+rm -f /tmp/sshx.log /tmp/sshx.pid /tmp/sshx.out /tmp/sshx.typescript
+echo '--- sshx diag ---'
+command -v sshx >/dev/null 2>&1 && echo HAVE_SSHX_BIN || echo NO_SSHX_BIN
+command -v sshx >/dev/null 2>&1 && ls -l "$(command -v sshx)" 2>/dev/null || true
+command -v curl >/dev/null 2>&1 && timeout 8 curl -sS -o /dev/null -w 'https_sshx_io=%{{http_code}}\\n' --connect-timeout 5 https://sshx.io || echo 'https_sshx_io=FAIL'
 if command -v sshx >/dev/null 2>&1; then
-  setsid sshx </dev/null >/tmp/sshx.log 2>&1 &
+  # Prefer a PTY so sshx flushes the share link (Rust full-buffer on pipe otherwise)
+  if command -v script >/dev/null 2>&1; then
+    setsid script -q -c 'sshx' /tmp/sshx.typescript </dev/null >/tmp/sshx.log 2>&1 &
+  elif command -v stdbuf >/dev/null 2>&1; then
+    setsid stdbuf -oL -eL sshx </dev/null >/tmp/sshx.log 2>&1 &
+  else
+    setsid sshx </dev/null >/tmp/sshx.log 2>&1 &
+  fi
   echo $! > /tmp/sshx.pid
   for i in $(seq 1 {timeout}); do
-    if grep -Eq 'https://sshx\\.io|ssh .*@sshx\\.io' /tmp/sshx.log 2>/dev/null; then break; fi
+    if grep -Eq 'https://sshx\\.io|ssh .*@sshx\\.io' /tmp/sshx.log /tmp/sshx.typescript 2>/dev/null; then break; fi
     PID=$(cat /tmp/sshx.pid 2>/dev/null)
     if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then break; fi
     sleep 1
   done
+  echo '--- sshx.log ---'
   cat /tmp/sshx.log 2>/dev/null || true
+  echo '--- sshx.typescript ---'
+  cat /tmp/sshx.typescript 2>/dev/null || true
 else
   if [ -f /tmp/sshx-get.sh ]; then
     timeout {max(15, timeout)} sh /tmp/sshx-get.sh run >/tmp/sshx.log 2>&1
@@ -1066,31 +1082,44 @@ else
 fi
 """
         try:
-            code, out = self._run_script(container_id, script, timeout=timeout + 15)
+            code, out = self._run_script(container_id, script, timeout=timeout + 20)
         except Exception as exc:
             raise ProviderError(f"sshx exec failed: {exc}") from exc
-        url = self._extract_sshx_url(out or "")
+        out = out or ""
+        url = self._extract_sshx_url(out)
         if not url:
             _, out2 = self.exec_command(
-                container_id, "cat /tmp/sshx.log 2>/dev/null || true", timeout=15
+                container_id,
+                "cat /tmp/sshx.log /tmp/sshx.typescript 2>/dev/null || true",
+                timeout=15,
             )
             url = self._extract_sshx_url(out2 or "")
         url = self._strip_ansi(url or "").strip()
         if not url:
-            tail = self._strip_ansi(((out or "") + "\n" + (install_log or "")))[-500:].strip()
+            tail = self._strip_ansi(out)[-700:].strip()
+            if not tail:
+                tail = self._strip_ansi(install_log or "")[-400:].strip()
             raise ProviderError(
                 "sshx did not return a share link "
-                f"(exit {code}). Install/network issue: {tail}"
+                f"(exit {code}). Output: {tail or 'empty'}"
             )
         return url
 
-    def start_tmate(self, container_id: str, timeout: int = 15) -> str:
+    def start_tmate(self, container_id: str, timeout: int = 20) -> str:
         """Install tmate if needed and return an SSH share command.
 
         Reuses the cached install from start_sshx — does not re-run apt.
         """
         install_log = self._ensure_remote_tools(container_id)
         script = f"""set +e
+echo '--- tmate diag ---'
+command -v tmate >/dev/null 2>&1 && echo HAVE_TMATE_BIN || echo NO_TMATE_BIN
+command -v getent >/dev/null 2>&1 && getent hosts ssh.tmate.io || echo 'DNS_ssh_tmate=FAIL'
+if command -v nc >/dev/null 2>&1; then
+  timeout 5 nc -z -w 4 ssh.tmate.io 22 >/dev/null 2>&1 && echo 'TCP_22=OK' || echo 'TCP_22=FAIL'
+elif command -v timeout >/dev/null 2>&1; then
+  timeout 5 sh -c 'echo > /dev/tcp/ssh.tmate.io/22' 2>/dev/null && echo 'TCP_22=OK' || echo 'TCP_22=FAIL'
+fi
 if ! command -v tmate >/dev/null 2>&1; then
   echo 'tmate not installed'
   exit 2
@@ -1098,7 +1127,7 @@ fi
 SOCK=/tmp/tmate.sock
 tmate -S "$SOCK" kill-server >/dev/null 2>&1 || true
 rm -f "$SOCK"
-timeout 20 tmate -S "$SOCK" new-session -d >/tmp/tmate.log 2>&1
+timeout 15 tmate -v -S "$SOCK" new-session -d >/tmp/tmate.log 2>&1
 for i in $(seq 1 {timeout}); do
   SSH=$(timeout 3 tmate -S "$SOCK" show -qF '#{{tmate_ssh}}' 2>/dev/null)
   if [ -n "$SSH" ]; then echo "$SSH"; exit 0; fi
@@ -1107,12 +1136,13 @@ for i in $(seq 1 {timeout}); do
   sleep 1
 done
 echo 'TMATE_TIMEOUT'
+echo '--- tmate.log ---'
 cat /tmp/tmate.log 2>/dev/null || true
-timeout 3 tmate -S "$SOCK" show 2>/dev/null | head -n 20 || true
+timeout 3 tmate -S "$SOCK" show-messages 2>/dev/null | tail -n 30 || true
 exit 3
 """
         try:
-            code, out = self._run_script(container_id, script, timeout=timeout + 15)
+            code, out = self._run_script(container_id, script, timeout=timeout + 20)
         except Exception as exc:
             raise ProviderError(f"tmate exec failed: {exc}") from exc
         ssh_cmd = self._extract_tmate_ssh(out or "")
@@ -1129,7 +1159,9 @@ exit 3
         if not ssh_cmd:
             hint = ""
             low = self._strip_ansi(out or "").lower()
-            if code == 137:
+            if "tcp_22=fail" in low or "dns_ssh_tmate=fail" in low:
+                hint = " Outbound to ssh.tmate.io:22 is blocked (common in datacenters)."
+            elif code == 137:
                 hint = " Process was SIGKILLed (OOM or external kill)."
             elif code == 124:
                 hint = " Timed out waiting for tmate relay."
@@ -1137,9 +1169,7 @@ exit 3
                 hint = " Instance may have no outbound network to tmate.io."
             elif "NO_TMATE" in (install_log or "") or "tmate not installed" in low:
                 hint = " tmate failed to install (apt package + static binary both failed)."
-            tail = (
-                self._strip_ansi((out or "") + "\n" + (install_log or ""))
-            )[-400:].strip()
+            tail = self._strip_ansi((out or ""))[-500:].strip()
             raise ProviderError(
                 "tmate did not return an SSH command "
                 f"(exit {code}).{hint} Details: {tail}"
@@ -1149,7 +1179,7 @@ exit 3
         return ssh_cmd
 
     def stop_remote_share(self, container_id: str, tool: str = "all") -> None:
-        """Best-effort stop of sshx/tmate sessions inside an instance."""
+        """Best-effort stop of sshx/tmate/ttyd sessions inside an instance."""
         if tool in ("sshx", "all"):
             self.exec_command(
                 container_id,
@@ -1163,6 +1193,143 @@ exit 3
                 "tmate -S /tmp/tmate.sock kill-server 2>/dev/null || true; true",
                 timeout=15,
             )
+        if tool in ("web", "all"):
+            self.exec_command(
+                container_id,
+                "if [ -f /tmp/vex-ttyd.pid ]; then kill \"$(cat /tmp/vex-ttyd.pid 2>/dev/null)\" >/dev/null 2>&1 || true; fi; "
+                "if [ -f /tmp/vex-ttyd-tunnel.pid ]; then kill \"$(cat /tmp/vex-ttyd-tunnel.pid 2>/dev/null)\" >/dev/null 2>&1 || true; fi; "
+                "pkill -x ttyd >/dev/null 2>&1 || true; true",
+                timeout=15,
+            )
+
+    def start_web_terminal(self, container_id: str, timeout: int = 75) -> dict:
+        """Browser shell via ttyd + localhost.run (works when sshx/tmate relays are blocked).
+
+        File manager already proves this tunnel path from the instance.
+        """
+        token = secrets.token_urlsafe(16)
+        port = 7681
+        # ARCH-aware ttyd static binary; fall back to apt
+        script = f"""set +e
+export DEBIAN_FRONTEND=noninteractive
+TOKEN={token}
+PORT={port}
+if [ -f /tmp/vex-ttyd.pid ]; then kill "$(cat /tmp/vex-ttyd.pid)" >/dev/null 2>&1 || true; fi
+if [ -f /tmp/vex-ttyd-tunnel.pid ]; then kill "$(cat /tmp/vex-ttyd-tunnel.pid)" >/dev/null 2>&1 || true; fi
+rm -f /tmp/vex-ttyd.log /tmp/vex-ttyd.pid /tmp/vex-ttyd-tunnel.log /tmp/vex-ttyd-tunnel.pid /tmp/vex-ttyd-askpass.sh
+
+install_ttyd() {{
+  command -v ttyd >/dev/null 2>&1 && return 0
+  ARCH=$(uname -m)
+  case "$ARCH" in
+    x86_64|amd64) TA=x86_64 ;;
+    aarch64|arm64) TA=aarch64 ;;
+    armv7l|armhf) TA=armhf ;;
+    i386|i686) TA=i686 ;;
+    *) TA=x86_64 ;;
+  esac
+  TY_URL="https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.${{TA}}"
+  if command -v curl >/dev/null 2>&1; then
+    timeout 25 curl -fsSL --connect-timeout 8 "$TY_URL" -o /tmp/ttyd.bin && {{
+      chmod +x /tmp/ttyd.bin
+      mv -f /tmp/ttyd.bin /usr/local/bin/ttyd 2>/dev/null || cp -f /tmp/ttyd.bin /usr/local/bin/ttyd
+    }}
+  fi
+  command -v ttyd >/dev/null 2>&1 && return 0
+  if command -v apt-get >/dev/null 2>&1; then
+    timeout 30 apt-get install -y -qq ttyd >/tmp/vex-ttyd-apt.log 2>&1 || true
+  fi
+  command -v ttyd >/dev/null 2>&1
+}}
+
+if ! install_ttyd; then
+  echo TTYD_INSTALL_FAIL
+  tail -n 20 /tmp/vex-ttyd-apt.log 2>/dev/null || true
+  exit 2
+fi
+echo HAVE_TTYD
+
+# basic-auth: vex / TOKEN (URL includes token for the tunnel query if needed)
+setsid ttyd -p "$PORT" -W -i 127.0.0.1 -c "vex:$TOKEN" --once /bin/sh </dev/null >/tmp/vex-ttyd.log 2>&1 &
+echo $! > /tmp/vex-ttyd.pid
+sleep 1
+if ! kill -0 "$(cat /tmp/vex-ttyd.pid)" 2>/dev/null; then
+  echo TTYD_START_FAIL
+  cat /tmp/vex-ttyd.log 2>/dev/null || true
+  exit 4
+fi
+
+command -v ssh >/dev/null 2>&1 || {{
+  command -v apt-get >/dev/null 2>&1 && apt-get install -y -qq openssh-client >/dev/null 2>&1 || true
+}}
+printf '#!/bin/sh\\necho\\n' > /tmp/vex-ttyd-askpass.sh
+chmod +x /tmp/vex-ttyd-askpass.sh
+export DISPLAY=:0 SSH_ASKPASS=/tmp/vex-ttyd-askpass.sh SSH_ASKPASS_REQUIRE=force
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o NumberOfPasswordPrompts=1"
+extract_url() {{
+  U=$(grep -Eio 'https://[A-Za-z0-9._-]+\\.(localhost\\.run|lhr\\.life|lhrtunnel\\.link|lhr\\.rocks|lhr\\.link)[A-Za-z0-9._/-]*' /tmp/vex-ttyd-tunnel.log 2>/dev/null | head -n1)
+  if [ -z "$U" ]; then
+    H=$(grep -Eio '[A-Za-z0-9._-]+\\.(localhost\\.run|lhr\\.life|lhrtunnel\\.link|lhr\\.rocks|lhr\\.link)' /tmp/vex-ttyd-tunnel.log 2>/dev/null | head -n1)
+    if [ -n "$H" ]; then U="https://$H"; fi
+  fi
+  echo "$U"
+}}
+setsid ssh $SSH_OPTS -R 80:127.0.0.1:$PORT nokey@localhost.run </dev/null >/tmp/vex-ttyd-tunnel.log 2>&1 &
+echo $! > /tmp/vex-ttyd-tunnel.pid
+URL=""
+for i in $(seq 1 30); do
+  URL=$(extract_url)
+  if [ -n "$URL" ]; then break; fi
+  if [ -f /tmp/vex-ttyd-tunnel.pid ]; then
+    PID=$(cat /tmp/vex-ttyd-tunnel.pid 2>/dev/null)
+    if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then break; fi
+  fi
+  sleep 1
+done
+echo "TOKEN=$TOKEN"
+echo "PORT=$PORT"
+echo "URL=${{URL:-}}"
+if [ -n "$URL" ]; then
+  echo WEB_OK
+else
+  echo WEB_TUNNEL_FAIL
+  tail -n 40 /tmp/vex-ttyd-tunnel.log 2>/dev/null || true
+  exit 5
+fi
+"""
+        try:
+            code, out = self._run_script(container_id, script, timeout=timeout)
+        except Exception as exc:
+            raise ProviderError(f"web terminal exec failed: {exc}") from exc
+        out = self._strip_ansi(out or "")
+        url = self._extract_tunnel_url(out)
+        if not url:
+            _, out2 = self.exec_command(
+                container_id,
+                "cat /tmp/vex-ttyd-tunnel.log 2>/dev/null || true",
+                timeout=15,
+            )
+            url = self._extract_tunnel_url(out2 or "")
+        url = (url or "").strip()
+        if not url or "WEB_OK" not in out:
+            tail = out[-600:].strip()
+            raise ProviderError(
+                f"web terminal tunnel did not come up (exit {code}): {tail}"
+            )
+        # ttyd basic auth — open URL, browser prompts for user vex / token
+        return {"url": url, "token": token, "port": port, "username": "vex"}
+
+    def stop_web_terminal(self, container_id: str) -> None:
+        try:
+            self.exec_command(
+                container_id,
+                "if [ -f /tmp/vex-ttyd.pid ]; then kill \"$(cat /tmp/vex-ttyd.pid)\" >/dev/null 2>&1 || true; rm -f /tmp/vex-ttyd.pid; fi; "
+                "if [ -f /tmp/vex-ttyd-tunnel.pid ]; then kill \"$(cat /tmp/vex-ttyd-tunnel.pid)\" >/dev/null 2>&1 || true; rm -f /tmp/vex-ttyd-tunnel.pid; fi; "
+                "pkill -x ttyd >/dev/null 2>&1 || true; echo WEB_STOPPED",
+                timeout=20,
+            )
+        except Exception as exc:
+            raise ProviderError(f"web terminal stop failed: {exc}") from exc
 
     @staticmethod
     def _extract_tunnel_url(text: str) -> str:
