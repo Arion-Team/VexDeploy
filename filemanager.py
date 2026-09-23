@@ -21,51 +21,186 @@ ROOT = Path("/")
 MAX_EDIT = 2 * 1024 * 1024
 
 CSS = """
-:root { --bg:#0b1020; --card:#141b33; --fg:#e8ecff; --muted:#8b93b8;
-  --acc:#3dd6c6; --danger:#ff5c7a; --ok:#3dff9a; }
+:root {
+  --bg:#070a14; --bg2:#0b1020; --card:#121a33; --card2:#0e1530;
+  --fg:#e8ecff; --muted:#8b93b8; --line:#243056; --line2:#1d2748;
+  --acc:#3dd6c6; --acc-dim:rgba(61,214,198,.14); --danger:#ff5c7a;
+  --ok:#3dff9a; --warn:#ffc857; --r:14px;
+  --shadow:0 12px 32px rgba(0,0,0,.38);
+}
 * { box-sizing:border-box; }
-body { margin:0; font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif;
-  background:linear-gradient(160deg,#070a16,#0b1020 40%,#0d1430); color:var(--fg); }
+html { color-scheme:dark; }
+body {
+  margin:0; min-height:100vh; color:var(--fg);
+  font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  background:
+    radial-gradient(1100px 520px at 8% -10%, rgba(61,214,198,.13), transparent 55%),
+    radial-gradient(900px 480px at 100% 0%, rgba(96,128,255,.11), transparent 50%),
+    linear-gradient(180deg,var(--bg),var(--bg2) 40%,#0d1430);
+  background-attachment:fixed;
+}
 a { color:var(--acc); text-decoration:none; }
-a:hover { text-decoration:underline; }
-.wrap { max-width:1100px; margin:18px auto; padding:0 14px 40px; }
-header { display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:space-between;
-  background:var(--card); border:1px solid #243056; border-radius:14px; padding:14px 16px; }
-header h1 { margin:0; font-size:18px; font-weight:700; letter-spacing:.3px; }
-header .tag { color:var(--muted); font-size:12px; }
-.bar { display:flex; flex-wrap:wrap; gap:8px; margin:14px 0; }
-.bar form, .bar input, .bar button, .bar select {
-  background:#0e1530; color:var(--fg); border:1px solid #2a365c; border-radius:10px;
-  padding:8px 10px; font:inherit;
+a:hover { filter:brightness(1.1); }
+.shell { max-width:1120px; margin:0 auto; padding:18px 16px 48px; }
+.top {
+  display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between;
+  background:linear-gradient(180deg,rgba(20,28,54,.95),rgba(14,20,40,.95));
+  border:1px solid var(--line); border-radius:var(--r);
+  padding:14px 16px; box-shadow:var(--shadow);
+  backdrop-filter:blur(8px);
 }
-.bar button, .btn {
-  background:linear-gradient(180deg,#1f7a70,#17615a); border:none; cursor:pointer;
-  color:#eafffc; font-weight:600; padding:8px 12px; border-radius:10px;
+.brand { display:flex; gap:12px; align-items:center; }
+.logo {
+  width:40px; height:40px; border-radius:12px; display:grid; place-items:center;
+  font-size:18px; font-weight:800; color:#04121a;
+  background:linear-gradient(145deg,var(--acc),#5ee0c8 55%,#2a9f94);
+  box-shadow:0 6px 18px rgba(61,214,198,.35);
 }
-.btn.danger { background:linear-gradient(180deg,#a12645,#7c1b34); }
-.btn.ghost { background:#182244; border:1px solid #2a365c; }
-.crumbs { margin:8px 0 14px; color:var(--muted); word-break:break-all; }
-.crumbs a { color:var(--acc); }
-table { width:100%; border-collapse:collapse; background:var(--card);
-  border:1px solid #243056; border-radius:14px; overflow:hidden; }
-th, td { padding:10px 12px; border-bottom:1px solid #1d2748; text-align:left; }
-th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; }
+.brand-name { font-size:17px; font-weight:750; letter-spacing:.2px; line-height:1.15; }
+.brand-sub { color:var(--muted); font-size:12px; letter-spacing:.4px; text-transform:uppercase; }
+.top-meta { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.pill {
+  font-size:11px; font-weight:650; letter-spacing:.3px; text-transform:uppercase;
+  color:#9ff0e6; background:var(--acc-dim); border:1px solid rgba(61,214,198,.35);
+  border-radius:999px; padding:5px 10px;
+}
+.pill.dim { color:var(--muted); background:rgba(255,255,255,.04); border-color:var(--line); text-transform:none; font-weight:550; }
+.flash {
+  display:flex; gap:10px; align-items:flex-start; margin:14px 0 0; padding:12px 14px;
+  border-radius:12px; background:rgba(255,255,255,.04); border:1px solid var(--line);
+  box-shadow:0 4px 14px rgba(0,0,0,.2);
+}
+.flash::before { content:"i"; flex:0 0 auto; width:22px; height:22px; border-radius:999px;
+  display:grid; place-items:center; font-weight:800; font-size:12px;
+  background:rgba(61,214,198,.18); color:var(--acc); }
+.flash.ok { border-color:rgba(61,255,154,.35); }
+.flash.ok::before { content:"✓"; background:rgba(61,255,154,.15); color:var(--ok); }
+.flash.err { border-color:rgba(255,92,122,.4); color:#ffc0cc; }
+.flash.err::before { content:"!"; background:rgba(255,92,122,.18); color:var(--danger); }
+.crumbs {
+  display:flex; flex-wrap:wrap; align-items:center; gap:6px;
+  margin:16px 0 12px; padding:10px 12px; border-radius:12px;
+  background:rgba(14,21,48,.8); border:1px solid var(--line); color:var(--muted);
+  word-break:break-all;
+}
+.crumbs a {
+  display:inline-flex; align-items:center; padding:3px 9px; border-radius:8px;
+  background:rgba(61,214,198,.08); border:1px solid transparent; color:var(--acc);
+}
+.crumbs a:hover { border-color:rgba(61,214,198,.35); text-decoration:none; }
+.crumbs .sep { opacity:.45; }
+.toolbar {
+  display:grid; gap:10px; margin:0 0 14px; padding:12px;
+  background:var(--card); border:1px solid var(--line); border-radius:var(--r);
+}
+.toolbar-row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.toolbar form { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.toolbar input[type=text], .toolbar input[type=file], .toolbar input:not([type]) {
+  background:var(--card2); color:var(--fg); border:1px solid #2a365c;
+  border-radius:10px; padding:9px 11px; font:inherit; min-width:0;
+}
+.toolbar input[type=text]:focus, .toolbar input:not([type]):focus {
+  outline:none; border-color:rgba(61,214,198,.55); box-shadow:0 0 0 3px rgba(61,214,198,.12);
+}
+.toolbar input[type=file] { padding:7px 9px; max-width:240px; }
+.toolbar button, .btn {
+  display:inline-flex; align-items:center; justify-content:center; gap:6px;
+  background:linear-gradient(180deg,#1f8f83,#17655d); border:1px solid transparent;
+  color:#eafffc; font-weight:650; font:inherit; padding:9px 13px;
+  border-radius:10px; cursor:pointer; text-decoration:none;
+  box-shadow:0 4px 12px rgba(23,101,93,.35); transition:transform .12s ease, filter .12s ease;
+}
+.toolbar button:hover, .btn:hover { filter:brightness(1.08); text-decoration:none; transform:translateY(-1px); }
+.toolbar button:active, .btn:active { transform:translateY(0); }
+.btn.danger {
+  background:linear-gradient(180deg,#b12d4c,#7c1b34);
+  box-shadow:0 4px 12px rgba(124,27,52,.35);
+}
+.btn.ghost {
+  background:rgba(24,34,68,.9); border:1px solid #2a365c; color:#c9d2f5;
+  box-shadow:none;
+}
+.btn.sm { padding:6px 10px; font-size:12.5px; border-radius:8px; }
+.field-label { display:none; }
+.drop {
+  position:relative; display:flex; flex-wrap:wrap; gap:10px; align-items:center;
+  padding:12px; border-radius:12px; border:1.5px dashed #2f3f6d;
+  background:linear-gradient(180deg,rgba(61,214,198,.05),rgba(255,255,255,.02));
+  transition:border-color .15s ease, background .15s ease;
+}
+.drop.on { border-color:var(--acc); background:rgba(61,214,198,.1); }
+.drop-hint { color:var(--muted); font-size:12.5px; flex:1 1 160px; min-width:140px; }
+.drop-hint strong { color:#b7f5ec; font-weight:650; }
+.table-card {
+  background:var(--card); border:1px solid var(--line); border-radius:var(--r);
+  overflow:hidden; box-shadow:var(--shadow);
+}
+table { width:100%; border-collapse:collapse; }
+th, td { padding:11px 14px; border-bottom:1px solid var(--line2); text-align:left; vertical-align:middle; }
+th {
+  position:sticky; top:0; z-index:1;
+  color:var(--muted); font-weight:650; font-size:11.5px; letter-spacing:.6px;
+  text-transform:uppercase; background:#101736;
+}
 tr:last-child td { border-bottom:none; }
-tr:hover td { background:#182044; }
-.mono { font-family:ui-monospace,Consolas,monospace; font-size:13px; }
-.right { text-align:right; color:var(--muted); }
-.actions { display:flex; gap:6px; flex-wrap:wrap; }
-.flash { margin:10px 0; padding:10px 12px; border-radius:10px; background:#123; border:1px solid #2a365c; }
-.flash.ok { border-color:#1d5; }
-.flash.err { border-color:#f55; color:#fbb; }
-.editor textarea {
-  width:100%; min-height:420px; background:#0a0f22; color:#e8ecff;
-  border:1px solid #2a365c; border-radius:12px; padding:12px;
-  font:13px/1.4 ui-monospace,Consolas,monospace; resize:vertical;
+tbody tr { transition:background .12s ease; }
+tbody tr:hover td { background:rgba(61,214,198,.05); }
+.name-cell { display:flex; align-items:center; gap:9px; min-width:0; }
+.ico { flex:0 0 auto; width:1.35em; text-align:center; filter:saturate(.95); }
+.name-cell a { font-family:ui-monospace,Consolas,monospace; font-size:13px; word-break:break-all; }
+tr.is-dir .name-cell a { font-weight:650; color:#9ff0e6; }
+.type-tag {
+  margin-left:2px; font-size:10px; font-weight:700; letter-spacing:.4px;
+  color:var(--muted); background:rgba(255,255,255,.05);
+  border:1px solid var(--line); border-radius:999px; padding:2px 7px;
 }
-.card { background:var(--card); border:1px solid #243056; border-radius:14px; padding:16px; }
-footer { margin-top:18px; color:var(--muted); font-size:12px; }
-.hide { display:none; }
+.mono { font-family:ui-monospace,Consolas,monospace; font-size:13px; }
+.right { text-align:right; color:var(--muted); white-space:nowrap; }
+.actions { display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
+.actions form { display:inline-flex; }
+.empty {
+  padding:36px 16px; text-align:center; color:var(--muted);
+}
+.empty .big { display:block; font-size:28px; margin-bottom:8px; opacity:.85; }
+.card {
+  background:var(--card); border:1px solid var(--line); border-radius:var(--r);
+  padding:16px; box-shadow:var(--shadow);
+}
+.editor-head {
+  display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between;
+  margin-bottom:10px;
+}
+.editor-head .path {
+  font-family:ui-monospace,Consolas,monospace; font-size:13px; color:#b7f5ec;
+  background:var(--acc-dim); border:1px solid rgba(61,214,198,.28);
+  border-radius:999px; padding:5px 11px; word-break:break-all;
+}
+.editor textarea {
+  width:100%; min-height:440px; background:#0a0f22; color:#e8ecff;
+  border:1px solid #2a365c; border-radius:12px; padding:14px;
+  font:13px/1.5 ui-monospace,Consolas,monospace; resize:vertical;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.03);
+}
+.editor textarea:focus {
+  outline:none; border-color:rgba(61,214,198,.55);
+  box-shadow:0 0 0 3px rgba(61,214,198,.12);
+}
+.editor-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+.foot {
+  margin-top:18px; text-align:center; color:var(--muted); font-size:12px;
+}
+.foot code {
+  color:#9ff0e6; background:rgba(61,214,198,.1); border:1px solid rgba(61,214,198,.2);
+  border-radius:6px; padding:1px 6px;
+}
+.hide { display:none !important; }
+@media (max-width:760px) {
+  .shell { padding:12px 10px 36px; }
+  th:nth-child(2), td:nth-child(2) { display:none; }
+  .actions { justify-content:flex-start; }
+  .toolbar input[type=file] { max-width:100%; }
+  .btn, .toolbar button { padding:8px 11px; }
+}
 """
 
 
@@ -83,9 +218,17 @@ def _ok(req: "Handler") -> None:
     req.end_headers()
     req.wfile.write(
         (
-            "<html><body style='font-family:system-ui;background:#0b1020;color:#e8ecff;"
-            "padding:40px'><h2>Unauthorized</h2>"
-            f"<p>Add token: <code>/?token={TOKEN}</code></p></body></html>"
+            "<!doctype html><html><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<title>Unauthorized</title><style>" + CSS + "</style></head>"
+            "<body><div class='shell'><div class='top'><div class='brand'>"
+            "<span class='logo'>&#9670;</span><div>"
+            "<div class='brand-name'>VexDeploy</div>"
+            "<div class='brand-sub'>File Manager</div></div></div>"
+            "<div class='top-meta'><span class='pill'>locked</span></div></div>"
+            "<div class='card' style='margin-top:16px'><h2 style='margin:0 0 8px'>Unauthorized</h2>"
+            f"<p style='color:var(--muted);margin:0'>Add token: <code class='mono'>{html.escape('/?token=' + TOKEN)}</code></p>"
+            "</div></div></body></html>"
         ).encode()
     )
     raise PermissionError
@@ -110,21 +253,91 @@ def _human(n: int) -> str:
     return f"{n} B"
 
 
+_EXT_ICONS = {
+    ".py": "🐍", ".js": "📜", ".ts": "📜", ".jsx": "📜", ".tsx": "📜",
+    ".json": "{}", ".sh": "🖥️", ".bash": "🖥️", ".md": "📝", ".txt": "📄",
+    ".log": "📋", ".yml": "⚙️", ".yaml": "⚙️", ".toml": "⚙️", ".cfg": "⚙️",
+    ".conf": "⚙️", ".ini": "⚙️", ".env": "🔐", ".key": "🔐", ".crt": "🔐",
+    ".pem": "🔐", ".zip": "📦", ".tar": "📦", ".gz": "📦", ".tgz": "📦",
+    ".7z": "📦", ".rar": "📦", ".png": "🖼️", ".jpg": "🖼️", ".jpeg": "🖼️",
+    ".gif": "🖼️", ".svg": "🖼️", ".webp": "🖼️", ".html": "🌐", ".htm": "🌐",
+    ".css": "🎨", ".scss": "🎨", ".db": "🗄️", ".sqlite": "🗄️", ".sql": "🗄️",
+    ".pdf": "📕", ".csv": "📊", ".xlsx": "📊", ".exe": "🧩", ".bin": "🧩",
+}
+
+
+def _file_icon(name: str, is_dir: bool) -> str:
+    if is_dir:
+        return "📁"
+    return _EXT_ICONS.get(Path(name).suffix.lower(), "📄")
+
+
+def _kind(name: str, is_dir: bool) -> str:
+    if is_dir:
+        return "folder"
+    ext = Path(name).suffix.lower().lstrip(".")
+    return ext or "file"
+
+
+def _note(msg: str) -> str:
+    safe = html.escape(msg or "Something went wrong")
+    return (
+        "<div class='card'><div class='empty'>"
+        "<span class='big'>&#9888;&#65039;</span>"
+        f"{safe}</div></div>"
+    )
+
+
 def _page(title: str, body: str, flash: str = "", flash_cls: str = "") -> bytes:
-    flash_html = f'<div class="flash {flash_cls}">{html.escape(flash)}</div>' if flash else ""
+    flash_html = f'<div class="flash {flash_cls}"><span>{html.escape(flash)}</span></div>' if flash else ""
     doc = f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(title)}</title><style>{CSS}</style></head>
-<body><div class="wrap">
-<header>
-  <div><h1>VexDeploy File Manager</h1><div class="tag">upload · download · edit · delete</div></div>
-  <div class="tag">token-protected</div>
+<body>
+<div class="shell">
+<header class="top">
+  <div class="brand">
+    <span class="logo">&#9670;</span>
+    <div>
+      <div class="brand-name">VexDeploy</div>
+      <div class="brand-sub">File Manager</div>
+    </div>
+  </div>
+  <div class="top-meta">
+    <span class="pill">token-protected</span>
+    <span class="pill dim">127.0.0.1 &middot; localhost.run</span>
+  </div>
 </header>
 {flash_html}
 {body}
-<footer>Bound to 127.0.0.1 · exposed via localhost.run · do not share the full URL with token</footer>
-</div></body></html>"""
+<footer class="foot">Bound to <code>127.0.0.1</code> &middot; exposed via localhost.run &middot; do not share the full URL with token</footer>
+</div>
+{_DROP_JS}
+</body></html>"""
     return doc.encode("utf-8", errors="replace")
+
+
+_DROP_JS = """
+<script>
+(function(){
+  var d=document.getElementById("drop");
+  if(!d) return;
+  ["dragenter","dragover"].forEach(function(e){
+    d.addEventListener(e,function(ev){ev.preventDefault();d.classList.add("on");});
+  });
+  ["dragleave","drop"].forEach(function(e){
+    d.addEventListener(e,function(ev){ev.preventDefault();d.classList.remove("on");});
+  });
+  d.addEventListener("drop",function(ev){
+    var f=document.getElementById("upfile");
+    if(f&&ev.dataTransfer&&ev.dataTransfer.files&&ev.dataTransfer.files.length){
+      f.files=ev.dataTransfer.files;
+      if(f.form) f.form.submit();
+    }
+  });
+})();
+</script>
+"""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -201,7 +414,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise FileNotFoundError(target)
                 self._redirect("/?token=" + TOKEN + "&ok=" + urllib.parse.quote("Deleted " + target))
             except Exception as exc:
-                self._html(_page("Delete", "<div class='card'>err</div>", str(exc), "err"))
+                self._html(_page("Delete", _note(str(exc) or "Delete failed"), str(exc), "err"))
             return
         if parsed.path == "/mkdir":
             form = urllib.parse.parse_qs(body.decode("utf-8", "replace"))
@@ -213,7 +426,7 @@ class Handler(BaseHTTPRequestHandler):
                 (_safe(parent) / name).mkdir(exist_ok=False)
                 self._redirect("/?token=" + TOKEN + "&path=" + urllib.parse.quote(parent) + "&ok=" + urllib.parse.quote("Created " + name))
             except Exception as exc:
-                self._html(_page("Mkdir", "<div class='card'>err</div>", str(exc), "err"))
+                self._html(_page("Mkdir", _note(str(exc) or "Create folder failed"), str(exc), "err"))
             return
         if parsed.path == "/save":
             form = urllib.parse.parse_qs(body.decode("utf-8", "replace"))
@@ -227,7 +440,7 @@ class Handler(BaseHTTPRequestHandler):
                     parent = "/"
                 self._redirect("/?token=" + TOKEN + "&path=" + urllib.parse.quote("/" + parent.strip("/") + ("/" if parent.strip("/") else "")) + "&ok=" + urllib.parse.quote("Saved " + p.name))
             except Exception as exc:
-                self._html(_page("Save", "<div class='card'>err</div>", str(exc), "err"))
+                self._html(_page("Save", _note(str(exc) or "Save failed"), str(exc), "err"))
             return
         self._html(_page("Bad", "<div class='card'>bad request</div>"), 400)
 
@@ -247,7 +460,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._redirect("/edit?token=" + TOKEN + "&path=" + urllib.parse.quote(str(cur.relative_to(ROOT))))
                 return
         except Exception as exc:
-            self._html(_page("List", "<div class='card'>bad path</div>", str(exc), "err"))
+            self._html(_page("List", _note("bad path"), str(exc), "err"))
             return
 
         rel_disp = "/" + str(cur.relative_to(ROOT)).strip("/")
@@ -261,24 +474,27 @@ class Handler(BaseHTTPRequestHandler):
             crumbs.append(
                 f"<a href='/?token={TOKEN}&path={urllib.parse.quote('/' + acc)}'>{html.escape(part)}</a>"
             )
-        crumb_html = " ".join(crumbs)
 
         rows = []
         try:
             entries = sorted(cur.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
         except Exception as exc:
-            self._html(_page("List", "<div class='card'>perm</div>", str(exc), "err"))
+            self._html(_page("List", _note("Permission denied"), str(exc), "err"))
             return
         for ent in entries:
             name = ent.name
             if ent.is_dir():
                 href = f"/?token={TOKEN}&path={urllib.parse.quote((rel_disp.rstrip('/') + '/' + name))}"
                 rows.append(
-                    f"<tr><td><a class='mono' href='{href}'>📁 {html.escape(name)}/</a></td>"
+                    f"<tr class='is-dir'><td><div class='name-cell'>"
+                    f"<span class='ico'>{_file_icon(name, True)}</span>"
+                    f"<a class='mono' href='{href}'>{html.escape(name)}</a>"
+                    f"<span class='type-tag'>folder</span></div></td>"
                     f"<td class='right'>dir</td><td class='actions'>"
+                    f"<a class='btn ghost sm' href='{href}'>Open</a>"
                     f"<form method='post' action='/delete' onsubmit=\"return confirm('Delete {html.escape(name)}?')\">"
                     f"<input type='hidden' name='path' value='{html.escape(str(ent))}'>"
-                    f"<button class='btn danger' type='submit'>Delete</button></form></td></tr>"
+                    f"<button class='btn danger sm' type='submit'>Delete</button></form></td></tr>"
                 )
             else:
                 try:
@@ -288,43 +504,59 @@ class Handler(BaseHTTPRequestHandler):
                 edit = f"/edit?token={TOKEN}&path={urllib.parse.quote(str(ent.relative_to(ROOT)))}"
                 dl = f"/download?token={TOKEN}&path={urllib.parse.quote(str(ent.relative_to(ROOT)))}"
                 rows.append(
-                    f"<tr><td class='mono'><a href='{edit}'>{html.escape(name)}</a></td>"
+                    f"<tr><td><div class='name-cell'>"
+                    f"<span class='ico'>{_file_icon(name, False)}</span>"
+                    f"<a class='mono' href='{edit}'>{html.escape(name)}</a>"
+                    f"<span class='type-tag'>{html.escape(_kind(name, False))}</span></div></td>"
                     f"<td class='right'>{size}</td><td class='actions'>"
-                    f"<a class='btn ghost' href='{edit}'>Edit</a> "
-                    f"<a class='btn ghost' href='{dl}'>Download</a> "
+                    f"<a class='btn ghost sm' href='{edit}'>Edit</a> "
+                    f"<a class='btn ghost sm' href='{dl}'>Download</a> "
                     f"<form method='post' action='/delete' onsubmit=\"return confirm('Delete {html.escape(name)}?')\">"
                     f"<input type='hidden' name='path' value='{html.escape(str(ent))}'>"
-                    f"<button class='btn danger' type='submit'>Delete</button></form></td></tr>"
+                    f"<button class='btn danger sm' type='submit'>Delete</button></form></td></tr>"
                 )
 
         parent_rel = str(cur.parent.relative_to(ROOT)) if cur != ROOT else ""
         parent_href = f"/?token={TOKEN}" + (
             f"&path={urllib.parse.quote('/' + parent_rel.strip('/'))}" if parent_rel and parent_rel != "." else ""
         )
-        up = "" if cur == ROOT else f"<a class='btn ghost' href='{parent_href}'>⬆ Up</a>"
+        up = "" if cur == ROOT else f"<a class='btn ghost' href='{parent_href}'>&#8593; Up</a>"
 
+        crumb_html = " <span class='sep'>/</span> ".join(crumbs)
+        n_dirs = sum(1 for e in entries if e.is_dir())
+        n_files = len(entries) - n_dirs
         body = f"""
 <div class="crumbs">{crumb_html}</div>
-<div class="bar">
-  {up}
-  <form method="post" action="/mkdir">
-    <input type="hidden" name="path" value="{html.escape(str(cur))}">
-    <input name="name" placeholder="new folder" required>
-    <button type="submit">Mkdir</button>
-  </form>
-  <form method="post" action="/upload" enctype="multipart/form-data">
-    <input type="hidden" name="path" value="{html.escape(str(cur))}">
-    <input type="file" name="file" required multiple>
-    <button type="submit">Upload</button>
-  </form>
-  <form method="get" action="/">
-    <input type="hidden" name="token" value="{TOKEN}">
-    <input name="path" placeholder="/etc" value="{html.escape(rel_disp)}">
-    <button type="submit">Go</button>
-  </form>
+<div class="toolbar">
+  <div class="toolbar-row">
+    {up}
+    <span class="pill dim">{n_dirs} folders &middot; {n_files} files</span>
+    <form method="get" action="/">
+      <input type="hidden" name="token" value="{TOKEN}">
+      <input type="text" name="path" placeholder="/etc" value="{html.escape(rel_disp)}">
+      <button type="submit">Go</button>
+    </form>
+  </div>
+  <div class="toolbar-row">
+    <form method="post" action="/mkdir">
+      <input type="hidden" name="path" value="{html.escape(str(cur))}">
+      <input type="text" name="name" placeholder="new folder" required>
+      <button type="submit">+ Folder</button>
+    </form>
+  </div>
+  <div class="drop" id="drop">
+    <form method="post" action="/upload" enctype="multipart/form-data">
+      <input type="hidden" name="path" value="{html.escape(str(cur))}">
+      <input type="file" id="upfile" name="file" required multiple>
+      <button type="submit">Upload</button>
+    </form>
+    <div class="drop-hint"><strong>Drop files here</strong> or use Upload &middot; stays in this folder</div>
+  </div>
 </div>
-<table><thead><tr><th>Name</th><th class="right">Size</th><th>Actions</th></tr></thead>
-<tbody>{''.join(rows) or "<tr><td colspan=3>Empty</td></tr>"}</tbody></table>
+<div class="table-card">
+<table><thead><tr><th>Name</th><th class="right">Size</th><th class="right">Actions</th></tr></thead>
+<tbody>{''.join(rows) or "<tr><td colspan=3><div class='empty'><span class='big'>&#128193;</span>This folder is empty</div></td></tr>"}</tbody></table>
+</div>
 """
         self._html(_page(f"Files {rel_disp}", body, flash, fcls))
 
@@ -337,7 +569,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("file too large to edit in browser")
             text = p.read_text(encoding="utf-8", errors="replace")
         except Exception as exc:
-            self._html(_page("Edit", "<div class='card'>error</div>", str(exc), "err"))
+            self._html(_page("Edit", _note(str(exc) or "Cannot edit file"), str(exc), "err"))
             return
         rel = str(p.relative_to(ROOT))
         parent = "/" + str(p.parent.relative_to(ROOT)).strip("/")
@@ -351,12 +583,16 @@ class Handler(BaseHTTPRequestHandler):
         else:
             back = f"/?token={TOKEN}&path={urllib.parse.quote('/' + str(p.parent.relative_to(ROOT)).strip('/'))}"
         body = f"""
-<div class="crumbs"><a href="{back}">← Back</a> · <span class="mono">{html.escape(rel)}</span></div>
+<div class="crumbs"><a href="{back}">&#8592; Back</a> <span class="sep">/</span> <span class="mono">{html.escape(rel)}</span></div>
 <div class="card editor">
+  <div class="editor-head">
+    <span class="path">{html.escape(p.name)}</span>
+    <span class="pill dim">{html.escape(_human(p.stat().st_size))}</span>
+  </div>
   <form method="post" action="/save">
     <input type="hidden" name="path" value="{html.escape(rel)}">
     <textarea name="content" spellcheck="false">{html.escape(text)}</textarea>
-    <div class="bar" style="margin-top:12px">
+    <div class="editor-actions">
       <button type="submit">Save</button>
       <a class="btn ghost" href="/download?token={TOKEN}&path={urllib.parse.quote(rel)}">Download</a>
       <a class="btn ghost" href="{back}">Cancel</a>
@@ -372,7 +608,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise FileNotFoundError("not a file")
             data = p.read_bytes()
         except Exception as exc:
-            self._html(_page("Download", "<div class='card'>err</div>", str(exc), "err"))
+            self._html(_page("Download", _note(str(exc) or "Download failed"), str(exc), "err"))
             return
         ctype = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
         self.send_response(200)
@@ -412,7 +648,7 @@ class Handler(BaseHTTPRequestHandler):
                     dest.write_bytes(data)
                     saved.append(dest.name)
         if not saved:
-            self._html(_page("Upload", "<div class='card'>no files</div>", "No file received", "err"))
+            self._html(_page("Upload", _note("No file received"), "No file received", "err"))
             return
         parent = "/" + str(_safe(form_path).relative_to(ROOT)).strip("/")
         loc = f"/?token={TOKEN}"
