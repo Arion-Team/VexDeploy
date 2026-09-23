@@ -1634,72 +1634,43 @@ class ManageVPSView(discord.ui.View):
             f"Password: ||{row['password_plain']}||",
             "",
         ]
-        notes: list[str] = []
 
         async def _call(coro_factory, limit: int):
             return await asyncio.wait_for(coro_factory(), timeout=limit)
 
-        # Quick probe: if outbound to sshx is clearly dead, skip relays and use
-        # the localhost.run web shell (same tunnel as file manager).
-        probe_out = ""
-        try:
-            _pc, probe_out = await _call(
-                lambda: asyncio.to_thread(
-                    bot.provider.exec_command,
-                    row["container_id"],
-                    "command -v curl >/dev/null 2>&1 && "
-                    "timeout 4 curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 https://sshx.io "
-                    "|| echo FAIL",
-                    8,
-                ),
-                12,
-            )
-        except Exception:
-            probe_out = ""
-
+        # Always try sshx first (probe false-negatives were skipping it).
+        # Fall back: tmate → web shell (localhost.run).
         link = None
         err_shx = ""
-        skip_relays = False
-        ptxt = str(probe_out or "")
-        if "FAIL" in ptxt or "000" in ptxt or ptxt.strip() == "":
-            # empty probe = exec failed; still try sshx once (install may have worked)
-            if "FAIL" in ptxt or "000" in ptxt:
-                skip_relays = True
-                notes.append("_No HTTPS to sshx.io — using web shell._")
+        note = ""
 
-        if not skip_relays:
+        try:
+            link = await _call(
+                lambda: asyncio.to_thread(
+                    bot.provider.start_sshx, row["container_id"]
+                ),
+                75,
+            )
+            lines.append(f"**sshx**\n```\n{link}\n```")
+        except asyncio.TimeoutError:
+            err_shx = "timed out after 75s"
+        except Exception as exc:
+            err_shx = str(exc)
+
+        if not link:
             try:
-                link = await _call(
+                cmd = await _call(
                     lambda: asyncio.to_thread(
-                        bot.provider.start_sshx, row["container_id"]
+                        bot.provider.start_tmate, row["container_id"]
                     ),
-                    55,
+                    35,
                 )
-                lines.append(f"**sshx**\n```\n{link}\n```")
-            except asyncio.TimeoutError:
-                err_shx = "timed out after 55s"
+                lines.append(f"**tmate**\n```\n{cmd}\n```")
+                link = cmd
             except Exception as exc:
-                err_shx = str(exc)
-
-            if not link:
-                try:
-                    cmd = await _call(
-                        lambda: asyncio.to_thread(
-                            bot.provider.start_tmate, row["container_id"]
-                        ),
-                        35,
-                    )
-                    lines.append(f"**tmate**\n```\n{cmd}\n```")
-                    link = cmd
-                except Exception as exc:
-                    low = str(exc).lower()
-                    if (
-                        "dns_ssh_tmate=fail" in low
-                        or "tcp_22=fail" in low
-                        or "blocked" in low
-                    ):
-                        skip_relays = True
-                        notes.append("_ssh.tmate.io:22 blocked — using web shell._")
+                low = str(exc).lower()
+                if "dns_ssh_tmate=fail" in low or "tcp_22=fail" in low or "blocked" in low:
+                    note = "_ssh.tmate.io:22 blocked._"
 
         if not link:
             try:
@@ -1713,8 +1684,10 @@ class ManageVPSView(discord.ui.View):
                 lines.append(f"URL: {web['url']}")
                 lines.append(f"User: `vex` · Password: ||{web['token']}||")
                 lines.append("_Open URL → basic auth vex / token → root shell._")
-                if skip_relays and notes:
-                    lines.append(notes[0])
+                if err_shx:
+                    lines.append(f"_sshx: `{err_shx[:240]}`_")
+                if note:
+                    lines.append(note)
             except Exception as exc:
                 if err_shx:
                     lines.append(f"sshx: `{err_shx[:400]}`")

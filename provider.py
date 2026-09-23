@@ -1019,7 +1019,12 @@ tail -n 20 /tmp/vex-sshx-install.log 2>/dev/null || true
         import re
 
         text = LXDProvider._strip_ansi(text)
+        # Prefer explicit LINK= lines from our runner script
+        m = re.search(r"^LINK=(\S+)", text, re.MULTILINE)
+        if m and m.group(1).strip():
+            return m.group(1).strip().rstrip(".,);'\"")
         for pat in (
+            r"https://sshx\.io/s/[A-Za-z0-9._/-]+#?[A-Za-z0-9._-]*",
             r"https://sshx\.io/\S+",
             r"ssh\s+\S+@sshx\.io\S*",
             r"sshx\.io/\S+",
@@ -1045,75 +1050,118 @@ tail -n 20 /tmp/vex-sshx-install.log 2>/dev/null || true
                 return line.rstrip(".,);'\"")
         return ""
 
-    def start_sshx(self, container_id: str, timeout: int = 20) -> str:
+    def start_sshx(self, container_id: str, timeout: int = 25) -> str:
         """Install sshx if needed and return a share URL/SSH command.
 
-        Uses the official installer (GitHub releases have no binary assets).
-        Detaches via PID file only — never pkill -f (that SIGTERMs the launcher).
-        stdout is often fully buffered without a TTY — run under `script`/stdbuf
-        so the share link actually hits /tmp/sshx.log.
+        Tries three capture paths because sshx buffers without a TTY:
+        1) binary under script(1) PTY
+        2) binary under stdbuf
+        3) official `curl | sh -s run` (what CI uses — prints URL to stdout)
         """
         install_log = self._ensure_remote_tools(container_id)
 
         script = f"""set +e
+export TERM=xterm-256color
 if [ -f /tmp/sshx.pid ]; then kill "$(cat /tmp/sshx.pid 2>/dev/null)" >/dev/null 2>&1 || true; fi
 pkill -x sshx >/dev/null 2>&1 || true
-rm -f /tmp/sshx.log /tmp/sshx.pid /tmp/sshx.out /tmp/sshx.typescript
+rm -f /tmp/sshx.log /tmp/sshx.pid /tmp/sshx.out /tmp/sshx.typescript /tmp/sshx-run.log
+: > /tmp/sshx.log
 echo '--- sshx diag ---'
 command -v sshx >/dev/null 2>&1 && echo HAVE_SSHX_BIN || echo NO_SSHX_BIN
 command -v sshx >/dev/null 2>&1 && ls -l "$(command -v sshx)" 2>/dev/null || true
-command -v curl >/dev/null 2>&1 && timeout 8 curl -sS -o /dev/null -w 'https_sshx_io=%{{http_code}}\\n' --connect-timeout 5 https://sshx.io || echo 'https_sshx_io=FAIL'
+command -v script >/dev/null 2>&1 && echo HAVE_SCRIPT || echo NO_SCRIPT
+if command -v curl >/dev/null 2>&1; then
+  timeout 8 curl -sS -o /dev/null -w 'https_sshx_io=%{{http_code}}\\n' --connect-timeout 5 https://sshx.io/get || echo 'https_sshx_io=FAIL'
+fi
+
+extract_link() {{
+  grep -Eo 'https://sshx\\.io/[A-Za-z0-9._/#?=-]+|ssh [A-Za-z0-9._-]+@sshx\\.io[A-Za-z0-9._/-]*' \\
+    /tmp/sshx.log /tmp/sshx.typescript /tmp/sshx-run.log 2>/dev/null | head -n1
+}}
+
+wait_for_link() {{
+  i=0
+  while [ "$i" -lt "$1" ]; do
+    L=$(extract_link)
+    if [ -n "$L" ]; then echo "$L"; return 0; fi
+    i=$((i+1))
+    sleep 1
+  done
+  extract_link
+}}
+
+# --- try 1: existing binary under a PTY ---
 if command -v sshx >/dev/null 2>&1; then
-  # Prefer a PTY so sshx flushes the share link (Rust full-buffer on pipe otherwise)
   if command -v script >/dev/null 2>&1; then
-    setsid script -q -c 'sshx' /tmp/sshx.typescript </dev/null >/tmp/sshx.log 2>&1 &
+    setsid script -q -e -c 'sshx' /tmp/sshx.typescript </dev/null >/tmp/sshx.log 2>&1 &
   elif command -v stdbuf >/dev/null 2>&1; then
     setsid stdbuf -oL -eL sshx </dev/null >/tmp/sshx.log 2>&1 &
   else
     setsid sshx </dev/null >/tmp/sshx.log 2>&1 &
   fi
   echo $! > /tmp/sshx.pid
-  for i in $(seq 1 {timeout}); do
-    if grep -Eq 'https://sshx\\.io|ssh .*@sshx\\.io' /tmp/sshx.log /tmp/sshx.typescript 2>/dev/null; then break; fi
-    PID=$(cat /tmp/sshx.pid 2>/dev/null)
-    if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then break; fi
-    sleep 1
-  done
-  echo '--- sshx.log ---'
-  cat /tmp/sshx.log 2>/dev/null || true
-  echo '--- sshx.typescript ---'
-  cat /tmp/sshx.typescript 2>/dev/null || true
-else
-  if [ -f /tmp/sshx-get.sh ]; then
-    timeout {max(15, timeout)} sh /tmp/sshx-get.sh run >/tmp/sshx.log 2>&1
-    cat /tmp/sshx.log 2>/dev/null || true
-  elif command -v curl >/dev/null 2>&1; then
-    timeout {max(15, timeout)} sh -c 'curl -sSf https://sshx.io/get | sh -s run' >/tmp/sshx.log 2>&1
-    cat /tmp/sshx.log 2>/dev/null || true
-  else
-    echo 'sshx binary missing and curl unavailable'
-    exit 2
+  LINK=$(wait_for_link {timeout})
+  if [ -n "$LINK" ]; then
+    echo "LINK=$LINK"
+    echo SSHX_OK
+    exit 0
   fi
+  # kill partial attempt before next method
+  if [ -f /tmp/sshx.pid ]; then kill "$(cat /tmp/sshx.pid)" >/dev/null 2>&1 || true; fi
+  pkill -x sshx >/dev/null 2>&1 || true
 fi
+
+# --- try 2: official CI runner (prints URL even without TTY) ---
+echo '--- sshx run mode ---'
+if [ -f /tmp/sshx-get.sh ]; then
+  timeout {max(20, timeout)} sh -c 'sh /tmp/sshx-get.sh run' >/tmp/sshx-run.log 2>&1 &
+elif command -v curl >/dev/null 2>&1; then
+  timeout {max(20, timeout)} sh -c 'curl -sSf https://sshx.io/get | sh -s run' >/tmp/sshx-run.log 2>&1 &
+else
+  echo 'no sshx runner (need binary or curl)'
+fi
+RUN_PID=$!
+echo $RUN_PID > /tmp/sshx.pid
+LINK=$(wait_for_link {timeout})
+if [ -n "$LINK" ]; then
+  echo "LINK=$LINK"
+  echo SSHX_OK
+  exit 0
+fi
+
+# --- diagnostics if still no link ---
+echo '--- sshx.log ---'
+cat /tmp/sshx.log 2>/dev/null || true
+echo '--- sshx.typescript ---'
+cat /tmp/sshx.typescript 2>/dev/null || true
+echo '--- sshx-run.log ---'
+cat /tmp/sshx-run.log 2>/dev/null || true
+echo SSHX_NO_LINK
+exit 3
 """
         try:
-            code, out = self._run_script(container_id, script, timeout=timeout + 20)
+            code, out = self._run_script(container_id, script, timeout=timeout + 25)
         except Exception as exc:
             raise ProviderError(f"sshx exec failed: {exc}") from exc
-        out = out or ""
-        url = self._extract_sshx_url(out)
+        out = self._strip_ansi(out or "")
+
+        url = ""
+        for line in out.splitlines():
+            if line.startswith("LINK=") and line[5:].strip():
+                url = line[5:].strip()
+                break
+        if not url:
+            url = self._extract_sshx_url(out)
         if not url:
             _, out2 = self.exec_command(
                 container_id,
-                "cat /tmp/sshx.log /tmp/sshx.typescript 2>/dev/null || true",
+                "cat /tmp/sshx.log /tmp/sshx.typescript /tmp/sshx-run.log 2>/dev/null || true",
                 timeout=15,
             )
             url = self._extract_sshx_url(out2 or "")
         url = self._strip_ansi(url or "").strip()
         if not url:
-            tail = self._strip_ansi(out)[-700:].strip()
-            if not tail:
-                tail = self._strip_ansi(install_log or "")[-400:].strip()
+            tail = out[-700:].strip() or self._strip_ansi(install_log or "")[-400:].strip()
             raise ProviderError(
                 "sshx did not return a share link "
                 f"(exit {code}). Output: {tail or 'empty'}"
