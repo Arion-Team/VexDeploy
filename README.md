@@ -73,6 +73,24 @@ pip install -r requirements.txt
 
 ## Setup
 
+### One-shot (recommended)
+
+```bash
+# installs git + all apt packages, clones repo, Incus, venv, pip deps
+curl -fsSL https://raw.githubusercontent.com/Arion-Team/VexDeploy/main/setup.sh -o /tmp/vex-setup.sh
+sudo bash /tmp/vex-setup.sh
+
+# or from an existing clone:
+sudo bash setup.sh
+
+# also install systemd unit:
+sudo WITH_SYSTEMD=1 bash setup.sh
+```
+
+Then edit `.env` (set `DISCORD_TOKEN`) and start the bot.
+
+### Manual
+
 ```bash
 git clone https://github.com/Arion-Team/VexDeploy.git
 cd VexDeploy
