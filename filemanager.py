@@ -22,184 +22,195 @@ MAX_EDIT = 2 * 1024 * 1024
 
 CSS = """
 :root {
-  --bg:#070a14; --bg2:#0b1020; --card:#121a33; --card2:#0e1530;
-  --fg:#e8ecff; --muted:#8b93b8; --line:#243056; --line2:#1d2748;
-  --acc:#3dd6c6; --acc-dim:rgba(61,214,198,.14); --danger:#ff5c7a;
-  --ok:#3dff9a; --warn:#ffc857; --r:14px;
-  --shadow:0 12px 32px rgba(0,0,0,.38);
+  --bg:#0f1115; --panel:#161a21; --panel2:#1a1f28; --border:#252a33;
+  --text:#e6e8ec; --muted:#8b919c; --link:#7eb3ff; --link2:#a8c9ff;
+  --ok:#3ecf8e; --err:#f07178; --warn:#e6b455;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
 }
 * { box-sizing:border-box; }
 html { color-scheme:dark; }
 body {
-  margin:0; min-height:100vh; color:var(--fg);
-  font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-  background:
-    radial-gradient(1100px 520px at 8% -10%, rgba(61,214,198,.13), transparent 55%),
-    radial-gradient(900px 480px at 100% 0%, rgba(96,128,255,.11), transparent 50%),
-    linear-gradient(180deg,var(--bg),var(--bg2) 40%,#0d1430);
-  background-attachment:fixed;
+  margin:0; min-height:100vh; background:var(--bg); color:var(--text);
+  font:14px/1.45 var(--sans);
 }
-a { color:var(--acc); text-decoration:none; }
-a:hover { filter:brightness(1.1); }
-.shell { max-width:1120px; margin:0 auto; padding:18px 16px 48px; }
+a { color:var(--link); text-decoration:none; }
+a:hover { color:var(--link2); text-decoration:underline; }
+.shell { max-width:1080px; margin:0 auto; padding:28px 20px 56px; }
+
 .top {
-  display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between;
-  background:linear-gradient(180deg,rgba(20,28,54,.95),rgba(14,20,40,.95));
-  border:1px solid var(--line); border-radius:var(--r);
-  padding:14px 16px; box-shadow:var(--shadow);
-  backdrop-filter:blur(8px);
+  display:flex; align-items:baseline; justify-content:space-between; gap:16px;
+  padding-bottom:14px; border-bottom:1px solid var(--border); margin-bottom:18px;
 }
-.brand { display:flex; gap:12px; align-items:center; }
-.logo {
-  width:40px; height:40px; border-radius:12px; display:grid; place-items:center;
-  font-size:18px; font-weight:800; color:#04121a;
-  background:linear-gradient(145deg,var(--acc),#5ee0c8 55%,#2a9f94);
-  box-shadow:0 6px 18px rgba(61,214,198,.35);
+.brand { display:flex; align-items:baseline; gap:10px; min-width:0; }
+.brand-name { font-size:15px; font-weight:650; letter-spacing:-.01em; }
+.brand-sub { font-size:12.5px; color:var(--muted); }
+.top-meta { display:flex; gap:14px; font-size:12px; color:var(--muted); flex-wrap:wrap; justify-content:flex-end; }
+.top-meta code {
+  font-family:var(--mono); font-size:11.5px; color:#b7bec9;
+  background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:1px 6px;
 }
-.brand-name { font-size:17px; font-weight:750; letter-spacing:.2px; line-height:1.15; }
-.brand-sub { color:var(--muted); font-size:12px; letter-spacing:.4px; text-transform:uppercase; }
-.top-meta { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
-.pill {
-  font-size:11px; font-weight:650; letter-spacing:.3px; text-transform:uppercase;
-  color:#9ff0e6; background:var(--acc-dim); border:1px solid rgba(61,214,198,.35);
-  border-radius:999px; padding:5px 10px;
-}
-.pill.dim { color:var(--muted); background:rgba(255,255,255,.04); border-color:var(--line); text-transform:none; font-weight:550; }
+
 .flash {
-  display:flex; gap:10px; align-items:flex-start; margin:14px 0 0; padding:12px 14px;
-  border-radius:12px; background:rgba(255,255,255,.04); border:1px solid var(--line);
-  box-shadow:0 4px 14px rgba(0,0,0,.2);
+  display:flex; gap:10px; align-items:flex-start; margin:0 0 16px;
+  padding:10px 12px; border-radius:6px; font-size:13.5px;
+  background:var(--panel); border:1px solid var(--border); color:var(--text);
 }
-.flash::before { content:"i"; flex:0 0 auto; width:22px; height:22px; border-radius:999px;
-  display:grid; place-items:center; font-weight:800; font-size:12px;
-  background:rgba(61,214,198,.18); color:var(--acc); }
-.flash.ok { border-color:rgba(61,255,154,.35); }
-.flash.ok::before { content:"✓"; background:rgba(61,255,154,.15); color:var(--ok); }
-.flash.err { border-color:rgba(255,92,122,.4); color:#ffc0cc; }
-.flash.err::before { content:"!"; background:rgba(255,92,122,.18); color:var(--danger); }
+.flash.ok { border-color:#2a4a3a; color:#c8e6d4; }
+.flash.err { border-color:#4a2a2e; color:#f0c4c8; }
+.flash::before { content:"·"; color:var(--muted); font-weight:700; line-height:1.3; }
+.flash.ok::before { content:"✓"; color:var(--ok); }
+.flash.err::before { content:"!"; color:var(--err); }
+
 .crumbs {
-  display:flex; flex-wrap:wrap; align-items:center; gap:6px;
-  margin:16px 0 12px; padding:10px 12px; border-radius:12px;
-  background:rgba(14,21,48,.8); border:1px solid var(--line); color:var(--muted);
-  word-break:break-all;
+  display:flex; flex-wrap:wrap; align-items:center; gap:2px;
+  margin:0 0 14px; padding:0; font-size:13.5px; color:var(--muted);
 }
-.crumbs a {
-  display:inline-flex; align-items:center; padding:3px 9px; border-radius:8px;
-  background:rgba(61,214,198,.08); border:1px solid transparent; color:var(--acc);
-}
-.crumbs a:hover { border-color:rgba(61,214,198,.35); text-decoration:none; }
-.crumbs .sep { opacity:.45; }
+.crumbs a { color:var(--muted); padding:2px 4px; border-radius:4px; }
+.crumbs a:hover { color:var(--text); background:var(--panel); text-decoration:none; }
+.crumbs a:last-of-type { color:var(--text); font-weight:600; }
+.crumbs .sep { opacity:.4; padding:0 2px; user-select:none; }
+
 .toolbar {
-  display:grid; gap:10px; margin:0 0 14px; padding:12px;
-  background:var(--card); border:1px solid var(--line); border-radius:var(--r);
+  display:flex; flex-wrap:wrap; gap:8px; align-items:center;
+  margin:0 0 14px; padding:10px 0; border-bottom:1px solid var(--border);
 }
-.toolbar-row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
 .toolbar form { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
-.toolbar input[type=text], .toolbar input[type=file], .toolbar input:not([type]) {
-  background:var(--card2); color:var(--fg); border:1px solid #2a365c;
-  border-radius:10px; padding:9px 11px; font:inherit; min-width:0;
+.toolbar input[type=text], .toolbar input:not([type]) {
+  background:var(--panel); color:var(--text); border:1px solid var(--border);
+  border-radius:5px; padding:7px 10px; font:13px var(--sans); min-width:0;
 }
 .toolbar input[type=text]:focus, .toolbar input:not([type]):focus {
-  outline:none; border-color:rgba(61,214,198,.55); box-shadow:0 0 0 3px rgba(61,214,198,.12);
+  outline:none; border-color:#3d4a5c;
 }
-.toolbar input[type=file] { padding:7px 9px; max-width:240px; }
-.toolbar button, .btn {
+.toolbar input[type=file] {
+  background:var(--panel); color:var(--muted); border:1px dashed var(--border);
+  border-radius:5px; padding:6px 8px; font:12.5px var(--sans); max-width:260px;
+}
+.btn, .toolbar button {
   display:inline-flex; align-items:center; justify-content:center; gap:6px;
-  background:linear-gradient(180deg,#1f8f83,#17655d); border:1px solid transparent;
-  color:#eafffc; font-weight:650; font:inherit; padding:9px 13px;
-  border-radius:10px; cursor:pointer; text-decoration:none;
-  box-shadow:0 4px 12px rgba(23,101,93,.35); transition:transform .12s ease, filter .12s ease;
+  background:var(--panel2); border:1px solid var(--border); color:var(--text);
+  font:13px var(--sans); padding:7px 12px; border-radius:5px; cursor:pointer;
+  text-decoration:none; transition:background .12s ease, border-color .12s ease;
 }
-.toolbar button:hover, .btn:hover { filter:brightness(1.08); text-decoration:none; transform:translateY(-1px); }
-.toolbar button:active, .btn:active { transform:translateY(0); }
-.btn.danger {
-  background:linear-gradient(180deg,#b12d4c,#7c1b34);
-  box-shadow:0 4px 12px rgba(124,27,52,.35);
+.btn:hover, .toolbar button:hover { background:#202630; border-color:#333a46; text-decoration:none; color:var(--text); }
+.btn:active, .toolbar button:active { background:#12161c; }
+.btn.primary, .toolbar button[type=submit]:not(.ghost):not(.danger) {
+  background:#2b3544; border-color:#3a4556; color:#e8edf5;
 }
-.btn.ghost {
-  background:rgba(24,34,68,.9); border:1px solid #2a365c; color:#c9d2f5;
-  box-shadow:none;
-}
-.btn.sm { padding:6px 10px; font-size:12.5px; border-radius:8px; }
-.field-label { display:none; }
+.btn.primary:hover, .toolbar button[type=submit]:not(.ghost):not(.danger):hover { background:#323d4e; }
+.btn.danger { background:#2a1c1e; border-color:#4a2e32; color:#f0a0a8; }
+.btn.danger:hover { background:#352226; border-color:#5c3840; }
+.btn.ghost { background:transparent; border-color:transparent; color:var(--muted); padding:6px 8px; }
+.btn.ghost:hover { background:var(--panel); color:var(--text); border-color:var(--border); }
+.btn.sm { padding:4px 8px; font-size:12px; border-radius:4px; }
+
+.count { font-size:12.5px; color:var(--muted); margin-left:auto; white-space:nowrap; }
+
 .drop {
-  position:relative; display:flex; flex-wrap:wrap; gap:10px; align-items:center;
-  padding:12px; border-radius:12px; border:1.5px dashed #2f3f6d;
-  background:linear-gradient(180deg,rgba(61,214,198,.05),rgba(255,255,255,.02));
+  display:flex; flex-wrap:wrap; gap:10px; align-items:center;
+  margin:0 0 16px; padding:14px 12px; border:1px dashed var(--border);
+  border-radius:6px; background:var(--panel);
   transition:border-color .15s ease, background .15s ease;
 }
-.drop.on { border-color:var(--acc); background:rgba(61,214,198,.1); }
-.drop-hint { color:var(--muted); font-size:12.5px; flex:1 1 160px; min-width:140px; }
-.drop-hint strong { color:#b7f5ec; font-weight:650; }
+.drop.on { border-color:#4a5568; background:var(--panel2); }
+.drop-hint { color:var(--muted); font-size:12.5px; flex:1 1 140px; min-width:120px; }
+.drop-hint strong { color:#c5cad3; font-weight:600; }
+
 .table-card {
-  background:var(--card); border:1px solid var(--line); border-radius:var(--r);
-  overflow:hidden; box-shadow:var(--shadow);
+  background:var(--panel); border:1px solid var(--border); border-radius:6px;
+  overflow:hidden;
 }
 table { width:100%; border-collapse:collapse; }
-th, td { padding:11px 14px; border-bottom:1px solid var(--line2); text-align:left; vertical-align:middle; }
+th, td {
+  padding:9px 14px; border-bottom:1px solid var(--border);
+  text-align:left; vertical-align:middle;
+}
 th {
-  position:sticky; top:0; z-index:1;
-  color:var(--muted); font-weight:650; font-size:11.5px; letter-spacing:.6px;
-  text-transform:uppercase; background:#101736;
+  font-size:11px; font-weight:600; letter-spacing:.04em; text-transform:uppercase;
+  color:var(--muted); background:#12161d;
 }
 tr:last-child td { border-bottom:none; }
-tbody tr { transition:background .12s ease; }
-tbody tr:hover td { background:rgba(61,214,198,.05); }
-.name-cell { display:flex; align-items:center; gap:9px; min-width:0; }
-.ico { flex:0 0 auto; width:1.35em; text-align:center; filter:saturate(.95); }
-.name-cell a { font-family:ui-monospace,Consolas,monospace; font-size:13px; word-break:break-all; }
-tr.is-dir .name-cell a { font-weight:650; color:#9ff0e6; }
-.type-tag {
-  margin-left:2px; font-size:10px; font-weight:700; letter-spacing:.4px;
-  color:var(--muted); background:rgba(255,255,255,.05);
-  border:1px solid var(--line); border-radius:999px; padding:2px 7px;
+tbody tr { transition:background .1s ease; }
+tbody tr:hover { background:#1a1f27; }
+
+.name-cell { display:flex; align-items:center; gap:10px; min-width:0; }
+.ico {
+  flex:0 0 auto; width:28px; height:28px; border-radius:5px;
+  display:grid; place-items:center; font-size:10px; font-weight:700;
+  font-family:var(--mono); letter-spacing:.02em; text-transform:uppercase;
+  background:#1e2430; border:1px solid var(--border); color:#9aa3b2;
 }
-.mono { font-family:ui-monospace,Consolas,monospace; font-size:13px; }
-.right { text-align:right; color:var(--muted); white-space:nowrap; }
-.actions { display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
+.ico.folder { background:#1a2430; border-color:#2a3648; color:#7eb3ff; font-size:13px; }
+.ico.code { background:#1a2820; border-color:#2a4030; color:#7ee0a8; }
+.ico.cfg { background:#28241a; border-color:#403828; color:#e6c070; }
+.ico.secret { background:#241a20; border-color:#402838; color:#e080a0; }
+.ico.archive { background:#24201a; border-color:#403828; color:#d4b070; }
+.ico.media { background:#1a2028; border-color:#2a3848; color:#80b8e0; }
+
+.name-cell a {
+  font-family:var(--mono); font-size:13px; word-break:break-all; color:var(--text);
+}
+.name-cell a:hover { color:var(--link); }
+tr.is-dir .name-cell a { font-weight:600; color:#b8d4ff; }
+tr.is-dir .name-cell a:hover { color:#d0e4ff; }
+
+.ext {
+  font-size:10px; font-weight:600; color:var(--muted); letter-spacing:.03em;
+  text-transform:uppercase; margin-left:2px; white-space:nowrap;
+}
+.mono { font-family:var(--mono); font-size:13px; }
+.right { text-align:right; color:var(--muted); white-space:nowrap; font-size:13px; }
+.actions { display:flex; gap:4px; flex-wrap:wrap; justify-content:flex-end; align-items:center; }
 .actions form { display:inline-flex; }
+
 .empty {
-  padding:36px 16px; text-align:center; color:var(--muted);
+  padding:48px 16px; text-align:center; color:var(--muted); font-size:13.5px;
 }
-.empty .big { display:block; font-size:28px; margin-bottom:8px; opacity:.85; }
+.empty .big {
+  display:block; font-size:22px; margin-bottom:8px; opacity:.5;
+  font-family:var(--mono); font-weight:600;
+}
+
 .card {
-  background:var(--card); border:1px solid var(--line); border-radius:var(--r);
-  padding:16px; box-shadow:var(--shadow);
+  background:var(--panel); border:1px solid var(--border); border-radius:6px;
+  padding:18px;
 }
 .editor-head {
   display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between;
-  margin-bottom:10px;
+  margin-bottom:12px;
 }
 .editor-head .path {
-  font-family:ui-monospace,Consolas,monospace; font-size:13px; color:#b7f5ec;
-  background:var(--acc-dim); border:1px solid rgba(61,214,198,.28);
-  border-radius:999px; padding:5px 11px; word-break:break-all;
+  font-family:var(--mono); font-size:13px; color:#c5cad3;
+  background:var(--panel2); border:1px solid var(--border);
+  border-radius:4px; padding:4px 8px; word-break:break-all;
 }
+.editor-head .size { font-size:12.5px; color:var(--muted); }
 .editor textarea {
-  width:100%; min-height:440px; background:#0a0f22; color:#e8ecff;
-  border:1px solid #2a365c; border-radius:12px; padding:14px;
-  font:13px/1.5 ui-monospace,Consolas,monospace; resize:vertical;
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.03);
+  width:100%; min-height:440px; background:#0c0e12; color:var(--text);
+  border:1px solid var(--border); border-radius:5px; padding:12px;
+  font:13px/1.55 var(--mono); resize:vertical;
 }
-.editor textarea:focus {
-  outline:none; border-color:rgba(61,214,198,.55);
-  box-shadow:0 0 0 3px rgba(61,214,198,.12);
-}
+.editor textarea:focus { outline:none; border-color:#3d4a5c; }
 .editor-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+
 .foot {
-  margin-top:18px; text-align:center; color:var(--muted); font-size:12px;
+  margin-top:28px; padding-top:14px; border-top:1px solid var(--border);
+  color:var(--muted); font-size:12px;
 }
 .foot code {
-  color:#9ff0e6; background:rgba(61,214,198,.1); border:1px solid rgba(61,214,198,.2);
-  border-radius:6px; padding:1px 6px;
+  font-family:var(--mono); color:#b7bec9; background:var(--panel);
+  border:1px solid var(--border); border-radius:3px; padding:0 5px;
 }
 .hide { display:none !important; }
-@media (max-width:760px) {
-  .shell { padding:12px 10px 36px; }
+
+@media (max-width:720px) {
+  .shell { padding:18px 12px 40px; }
   th:nth-child(2), td:nth-child(2) { display:none; }
   .actions { justify-content:flex-start; }
   .toolbar input[type=file] { max-width:100%; }
-  .btn, .toolbar button { padding:8px 11px; }
+  .count { margin-left:0; }
+  .top { flex-direction:column; gap:8px; }
 }
 """
 
@@ -221,12 +232,12 @@ def _ok(req: "Handler") -> None:
             "<!doctype html><html><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<title>Unauthorized</title><style>" + CSS + "</style></head>"
-            "<body><div class='shell'><div class='top'><div class='brand'>"
-            "<span class='logo'>&#9670;</span><div>"
-            "<div class='brand-name'>VexDeploy</div>"
-            "<div class='brand-sub'>File Manager</div></div></div>"
-            "<div class='top-meta'><span class='pill'>locked</span></div></div>"
-            "<div class='card' style='margin-top:16px'><h2 style='margin:0 0 8px'>Unauthorized</h2>"
+            "<body><div class='shell'>"
+            "<header class='top'><div class='brand'>"
+            "<span class='brand-name'>VexDeploy</span>"
+            "<span class='brand-sub'>File Manager</span></div>"
+            "<div class='top-meta'><span>locked</span></div></header>"
+            "<div class='card'><h2 style='margin:0 0 8px;font-size:16px'>Unauthorized</h2>"
             f"<p style='color:var(--muted);margin:0'>Add token: <code class='mono'>{html.escape('/?token=' + TOKEN)}</code></p>"
             "</div></div></body></html>"
         ).encode()
@@ -253,37 +264,52 @@ def _human(n: int) -> str:
     return f"{n} B"
 
 
-_EXT_ICONS = {
-    ".py": "🐍", ".js": "📜", ".ts": "📜", ".jsx": "📜", ".tsx": "📜",
-    ".json": "{}", ".sh": "🖥️", ".bash": "🖥️", ".md": "📝", ".txt": "📄",
-    ".log": "📋", ".yml": "⚙️", ".yaml": "⚙️", ".toml": "⚙️", ".cfg": "⚙️",
-    ".conf": "⚙️", ".ini": "⚙️", ".env": "🔐", ".key": "🔐", ".crt": "🔐",
-    ".pem": "🔐", ".zip": "📦", ".tar": "📦", ".gz": "📦", ".tgz": "📦",
-    ".7z": "📦", ".rar": "📦", ".png": "🖼️", ".jpg": "🖼️", ".jpeg": "🖼️",
-    ".gif": "🖼️", ".svg": "🖼️", ".webp": "🖼️", ".html": "🌐", ".htm": "🌐",
-    ".css": "🎨", ".scss": "🎨", ".db": "🗄️", ".sqlite": "🗄️", ".sql": "🗄️",
-    ".pdf": "📕", ".csv": "📊", ".xlsx": "📊", ".exe": "🧩", ".bin": "🧩",
-}
+_CODE_EXT = {".py", ".js", ".ts", ".jsx", ".tsx", ".sh", ".bash", ".rb", ".go", ".rs", ".c", ".h", ".cpp", ".java", ".php"}
+_CFG_EXT = {".yml", ".yaml", ".toml", ".cfg", ".conf", ".ini", ".env", ".json", ".xml", ".properties"}
+_SECRET_EXT = {".key", ".crt", ".pem", ".p12", ".pfx"}
+_ARCHIVE_EXT = {".zip", ".tar", ".gz", ".tgz", ".7z", ".rar", ".bz2", ".xz"}
+_MEDIA_EXT = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".mp4", ".webm", ".mp3", ".wav", ".pdf"}
+_HTML_EXT = {".html", ".htm", ".css", ".scss", ".less"}
 
 
-def _file_icon(name: str, is_dir: bool) -> str:
+def _icon_class(name: str, is_dir: bool) -> str:
     if is_dir:
-        return "📁"
-    return _EXT_ICONS.get(Path(name).suffix.lower(), "📄")
+        return "folder"
+    ext = Path(name).suffix.lower()
+    if ext in _CODE_EXT or ext in {".md", ".txt", ".log"}:
+        return "code"
+    if ext in _CFG_EXT:
+        return "cfg"
+    if ext in _SECRET_EXT:
+        return "secret"
+    if ext in _ARCHIVE_EXT:
+        return "archive"
+    if ext in _MEDIA_EXT or ext in _HTML_EXT:
+        return "media"
+    return ""
+
+
+def _icon_label(name: str, is_dir: bool) -> str:
+    if is_dir:
+        return "▸"
+    ext = Path(name).suffix.lower().lstrip(".")
+    if not ext:
+        return "·"
+    return ext[:3]
 
 
 def _kind(name: str, is_dir: bool) -> str:
     if is_dir:
-        return "folder"
+        return ""
     ext = Path(name).suffix.lower().lstrip(".")
-    return ext or "file"
+    return ext
 
 
 def _note(msg: str) -> str:
     safe = html.escape(msg or "Something went wrong")
     return (
         "<div class='card'><div class='empty'>"
-        "<span class='big'>&#9888;&#65039;</span>"
+        "<span class='big'>!</span>"
         f"{safe}</div></div>"
     )
 
@@ -297,20 +323,17 @@ def _page(title: str, body: str, flash: str = "", flash_cls: str = "") -> bytes:
 <div class="shell">
 <header class="top">
   <div class="brand">
-    <span class="logo">&#9670;</span>
-    <div>
-      <div class="brand-name">VexDeploy</div>
-      <div class="brand-sub">File Manager</div>
-    </div>
+    <span class="brand-name">VexDeploy</span>
+    <span class="brand-sub">File Manager</span>
   </div>
   <div class="top-meta">
-    <span class="pill">token-protected</span>
-    <span class="pill dim">127.0.0.1 &middot; localhost.run</span>
+    <span>127.0.0.1</span>
+    <code>localhost.run</code>
   </div>
 </header>
 {flash_html}
 {body}
-<footer class="foot">Bound to <code>127.0.0.1</code> &middot; exposed via localhost.run &middot; do not share the full URL with token</footer>
+<footer class="foot">Bound to <code>127.0.0.1</code> · exposed via localhost.run · do not share the full URL with token</footer>
 </div>
 {_DROP_JS}
 </body></html>"""
@@ -487,10 +510,9 @@ class Handler(BaseHTTPRequestHandler):
                 href = f"/?token={TOKEN}&path={urllib.parse.quote((rel_disp.rstrip('/') + '/' + name))}"
                 rows.append(
                     f"<tr class='is-dir'><td><div class='name-cell'>"
-                    f"<span class='ico'>{_file_icon(name, True)}</span>"
-                    f"<a class='mono' href='{href}'>{html.escape(name)}</a>"
-                    f"<span class='type-tag'>folder</span></div></td>"
-                    f"<td class='right'>dir</td><td class='actions'>"
+                    f"<span class='ico folder'>{_icon_label(name, True)}</span>"
+                    f"<a href='{href}'>{html.escape(name)}</a></div></td>"
+                    f"<td class='right'>—</td><td class='actions'>"
                     f"<a class='btn ghost sm' href='{href}'>Open</a>"
                     f"<form method='post' action='/delete' onsubmit=\"return confirm('Delete {html.escape(name)}?')\">"
                     f"<input type='hidden' name='path' value='{html.escape(str(ent))}'>"
@@ -503,14 +525,15 @@ class Handler(BaseHTTPRequestHandler):
                     size = "?"
                 edit = f"/edit?token={TOKEN}&path={urllib.parse.quote(str(ent.relative_to(ROOT)))}"
                 dl = f"/download?token={TOKEN}&path={urllib.parse.quote(str(ent.relative_to(ROOT)))}"
+                kind = _kind(name, False)
+                kind_html = f"<span class='ext'>{html.escape(kind)}</span>" if kind else ""
                 rows.append(
                     f"<tr><td><div class='name-cell'>"
-                    f"<span class='ico'>{_file_icon(name, False)}</span>"
-                    f"<a class='mono' href='{edit}'>{html.escape(name)}</a>"
-                    f"<span class='type-tag'>{html.escape(_kind(name, False))}</span></div></td>"
+                    f"<span class='ico {_icon_class(name, False)}'>{_icon_label(name, False)}</span>"
+                    f"<a href='{edit}'>{html.escape(name)}</a>{kind_html}</div></td>"
                     f"<td class='right'>{size}</td><td class='actions'>"
-                    f"<a class='btn ghost sm' href='{edit}'>Edit</a> "
-                    f"<a class='btn ghost sm' href='{dl}'>Download</a> "
+                    f"<a class='btn ghost sm' href='{edit}'>Edit</a>"
+                    f"<a class='btn ghost sm' href='{dl}'>Download</a>"
                     f"<form method='post' action='/delete' onsubmit=\"return confirm('Delete {html.escape(name)}?')\">"
                     f"<input type='hidden' name='path' value='{html.escape(str(ent))}'>"
                     f"<button class='btn danger sm' type='submit'>Delete</button></form></td></tr>"
@@ -520,42 +543,38 @@ class Handler(BaseHTTPRequestHandler):
         parent_href = f"/?token={TOKEN}" + (
             f"&path={urllib.parse.quote('/' + parent_rel.strip('/'))}" if parent_rel and parent_rel != "." else ""
         )
-        up = "" if cur == ROOT else f"<a class='btn ghost' href='{parent_href}'>&#8593; Up</a>"
+        up = "" if cur == ROOT else f"<a class='btn ghost' href='{parent_href}'>↑</a>"
 
         crumb_html = " <span class='sep'>/</span> ".join(crumbs)
         n_dirs = sum(1 for e in entries if e.is_dir())
         n_files = len(entries) - n_dirs
         body = f"""
-<div class="crumbs">{crumb_html}</div>
+<nav class="crumbs">{crumb_html}</nav>
 <div class="toolbar">
-  <div class="toolbar-row">
-    {up}
-    <span class="pill dim">{n_dirs} folders &middot; {n_files} files</span>
-    <form method="get" action="/">
-      <input type="hidden" name="token" value="{TOKEN}">
-      <input type="text" name="path" placeholder="/etc" value="{html.escape(rel_disp)}">
-      <button type="submit">Go</button>
-    </form>
-  </div>
-  <div class="toolbar-row">
-    <form method="post" action="/mkdir">
-      <input type="hidden" name="path" value="{html.escape(str(cur))}">
-      <input type="text" name="name" placeholder="new folder" required>
-      <button type="submit">+ Folder</button>
-    </form>
-  </div>
-  <div class="drop" id="drop">
-    <form method="post" action="/upload" enctype="multipart/form-data">
-      <input type="hidden" name="path" value="{html.escape(str(cur))}">
-      <input type="file" id="upfile" name="file" required multiple>
-      <button type="submit">Upload</button>
-    </form>
-    <div class="drop-hint"><strong>Drop files here</strong> or use Upload &middot; stays in this folder</div>
-  </div>
+  {up}
+  <form method="get" action="/">
+    <input type="hidden" name="token" value="{TOKEN}">
+    <input type="text" name="path" placeholder="/etc" value="{html.escape(rel_disp)}">
+    <button type="submit">Go</button>
+  </form>
+  <form method="post" action="/mkdir">
+    <input type="hidden" name="path" value="{html.escape(str(cur))}">
+    <input type="text" name="name" placeholder="new folder" required>
+    <button type="submit">New folder</button>
+  </form>
+  <span class="count">{n_dirs} folders · {n_files} files</span>
+</div>
+<div class="drop" id="drop">
+  <form method="post" action="/upload" enctype="multipart/form-data">
+    <input type="hidden" name="path" value="{html.escape(str(cur))}">
+    <input type="file" id="upfile" name="file" required multiple>
+    <button type="submit">Upload</button>
+  </form>
+  <div class="drop-hint"><strong>Drop files</strong> into this folder, or use Upload</div>
 </div>
 <div class="table-card">
 <table><thead><tr><th>Name</th><th class="right">Size</th><th class="right">Actions</th></tr></thead>
-<tbody>{''.join(rows) or "<tr><td colspan=3><div class='empty'><span class='big'>&#128193;</span>This folder is empty</div></td></tr>"}</tbody></table>
+<tbody>{''.join(rows) or "<tr><td colspan=3><div class='empty'><span class='big'>[]</span>This folder is empty</div></td></tr>"}</tbody></table>
 </div>
 """
         self._html(_page(f"Files {rel_disp}", body, flash, fcls))
@@ -583,17 +602,17 @@ class Handler(BaseHTTPRequestHandler):
         else:
             back = f"/?token={TOKEN}&path={urllib.parse.quote('/' + str(p.parent.relative_to(ROOT)).strip('/'))}"
         body = f"""
-<div class="crumbs"><a href="{back}">&#8592; Back</a> <span class="sep">/</span> <span class="mono">{html.escape(rel)}</span></div>
+<nav class="crumbs"><a href="{back}">←</a> <span class="sep">/</span> <span class="mono">{html.escape(rel)}</span></nav>
 <div class="card editor">
   <div class="editor-head">
     <span class="path">{html.escape(p.name)}</span>
-    <span class="pill dim">{html.escape(_human(p.stat().st_size))}</span>
+    <span class="size">{html.escape(_human(p.stat().st_size))}</span>
   </div>
   <form method="post" action="/save">
     <input type="hidden" name="path" value="{html.escape(rel)}">
     <textarea name="content" spellcheck="false">{html.escape(text)}</textarea>
     <div class="editor-actions">
-      <button type="submit">Save</button>
+      <button type="submit" class="primary">Save</button>
       <a class="btn ghost" href="/download?token={TOKEN}&path={urllib.parse.quote(rel)}">Download</a>
       <a class="btn ghost" href="{back}">Cancel</a>
     </div>

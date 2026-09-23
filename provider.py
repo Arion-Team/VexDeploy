@@ -852,13 +852,12 @@ class LXDProvider:
             return out
         return raw or out or ""
 
-    # ── reverse SSH (sshx / tmate) ──────────────────────────
+    # ── reverse SSH (sshx) ───────────────────────────────────
     def _ensure_remote_tools(self, container_id: str, *, force: bool = False) -> str:
-        """Install curl/sshx/tmate once per instance (cached).
+        """Install curl/sshx once per instance (cached).
 
-        A full apt + download pass used to run on every sshx *and* tmate attempt
-        (~3 min each) — SSH button then stacked both for ~10 min. Probe first;
-        only install when missing; cache the log so the tmate fallback is free.
+        A full apt + download pass used to run on every sshx attempt (~3 min).
+        Probe first; only install when missing; cache the log.
         """
         if not force and container_id in self._tools_cache:
             return self._tools_cache[container_id]
@@ -869,16 +868,13 @@ class LXDProvider:
                 container_id,
                 "if [ -f /tmp/vex-tools.ready ]; then echo TOOLS_READY; fi; "
                 "command -v sshx >/dev/null 2>&1 && echo HAVE_SSHX || echo NO_SSHX; "
-                "command -v tmate >/dev/null 2>&1 && echo HAVE_TMATE || echo NO_TMATE; "
                 "command -v curl >/dev/null 2>&1 && echo HAVE_CURL || echo NO_CURL",
                 timeout=12,
             )
         except Exception as exc:
             probe = f"probe error: {exc}"
         text = probe or ""
-        if "TOOLS_READY" in text or (
-            "HAVE_SSHX" in text and "HAVE_TMATE" in text and "HAVE_CURL" in text
-        ):
+        if "TOOLS_READY" in text or ("HAVE_SSHX" in text and "HAVE_CURL" in text):
             self._tools_cache[container_id] = text
             return text
 
@@ -889,48 +885,16 @@ export APT_LISTCHANGES_FRONTEND=none
 echo '--- install ---'
 if command -v apt-get >/dev/null 2>&1; then
   # try without update first (existing lists are often enough / faster)
-  timeout 40 apt-get install -y -qq --no-install-recommends curl ca-certificates tmate \
+  timeout 40 apt-get install -y -qq --no-install-recommends curl ca-certificates \
     >>/tmp/vex-apt.log 2>&1 || {
     timeout 20 apt-get update -qq >/tmp/vex-apt.log 2>&1 || true
-    timeout 35 apt-get install -y -qq --no-install-recommends curl ca-certificates tmate \
-      >>/tmp/vex-apt.log 2>&1 || \
-    timeout 25 apt-get install -y -qq --no-install-recommends curl ca-certificates \
+    timeout 35 apt-get install -y -qq --no-install-recommends curl ca-certificates \
       >>/tmp/vex-apt.log 2>&1 || true
   }
 elif command -v apk >/dev/null 2>&1; then
-  timeout 35 apk add --no-cache curl ca-certificates tmate >/tmp/vex-apt.log 2>&1 || \
-  timeout 25 apk add --no-cache curl ca-certificates >>/tmp/vex-apt.log 2>&1 || true
+  timeout 35 apk add --no-cache curl ca-certificates >/tmp/vex-apt.log 2>&1 || true
 elif command -v yum >/dev/null 2>&1; then
-  timeout 40 yum install -y curl ca-certificates tmate >/tmp/vex-apt.log 2>&1 || \
-  timeout 25 yum install -y curl ca-certificates >>/tmp/vex-apt.log 2>&1 || true
-fi
-
-# tmate: static binary fallback
-if ! command -v tmate >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
-  echo 'tmate: trying static binary'
-  ARCH=$(uname -m)
-  case "$ARCH" in
-    x86_64|amd64) TA=amd64 ;;
-    aarch64|arm64) TA=arm64v8 ;;
-    armv7l|armhf) TA=arm32v7 ;;
-    armv6*) TA=arm32v6 ;;
-    i386|i686) TA=i386 ;;
-    *) TA=amd64 ;;
-  esac
-  TM_VER=2.4.0
-  TM_URL="https://github.com/tmate-io/tmate/releases/download/${TM_VER}/tmate-${TM_VER}-static-linux-${TA}.tar.xz"
-  if timeout 20 curl -fsSL --retry 1 --connect-timeout 8 "$TM_URL" -o /tmp/tmate.tar.xz; then
-    mkdir -p /tmp/tmate-extract
-    if tar -xJf /tmp/tmate.tar.xz -C /tmp/tmate-extract 2>/tmp/vex-tmate-extract.log; then
-      SRC=$(find /tmp/tmate-extract -type f -name tmate 2>/dev/null | head -n1)
-      if [ -n "$SRC" ]; then
-        chmod +x "$SRC"
-        cp -f "$SRC" /usr/local/bin/tmate 2>/dev/null || true
-        chmod +x /usr/local/bin/tmate 2>/dev/null || true
-      fi
-    fi
-    rm -rf /tmp/tmate.tar.xz /tmp/tmate-extract
-  fi
+  timeout 40 yum install -y curl ca-certificates >/tmp/vex-apt.log 2>&1 || true
 fi
 
 # sshx: official installer
@@ -952,7 +916,6 @@ for d in /usr/local/bin /usr/bin "$HOME/.local/bin" /root/.cargo/bin; do
 done
 
 command -v sshx >/dev/null 2>&1 && echo HAVE_SSHX || echo NO_SSHX
-command -v tmate >/dev/null 2>&1 && echo HAVE_TMATE || echo NO_TMATE
 command -v curl >/dev/null 2>&1 && echo HAVE_CURL || echo NO_CURL
 if command -v sshx >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
   echo TOOLS_READY > /tmp/vex-tools.ready
@@ -971,7 +934,7 @@ tail -n 20 /tmp/vex-sshx-install.log 2>/dev/null || true
             self._tools_cache[container_id] = text
             return text
         text = out or ""
-        if "NO_SSHX" in text or "NO_TMATE" in text:
+        if "NO_SSHX" in text:
             logger.warning("remote tools partial (exit %s): %s", code, text[-800:])
         self._tools_cache[container_id] = text
         return text
@@ -1047,20 +1010,6 @@ tail -n 20 /tmp/vex-sshx-install.log 2>/dev/null || true
                 url = re.sub(r"[\x00-\x1f]+$", "", url)
                 if url.startswith("http") or "sshx.io" in url:
                     return url
-        return ""
-
-    @staticmethod
-    def _extract_tmate_ssh(text: str) -> str:
-        import re
-
-        text = LXDProvider._strip_ansi(text)
-        m = re.search(r"ssh\s+\S+@\S+", text)
-        if m:
-            return m.group(0).strip().rstrip(".,);'\"")
-        for line in text.splitlines():
-            line = line.strip()
-            if line.startswith("ssh ") and "@" in line:
-                return line.rstrip(".,);'\"")
         return ""
 
     def start_sshx(self, container_id: str, timeout: int = 25) -> str:
@@ -1224,81 +1173,8 @@ exit 3
             )
         return url
 
-    def start_tmate(self, container_id: str, timeout: int = 20) -> str:
-        """Install tmate if needed and return an SSH share command.
-
-        Reuses the cached install from start_sshx — does not re-run apt.
-        """
-        install_log = self._ensure_remote_tools(container_id)
-        script = f"""set +e
-echo '--- tmate diag ---'
-command -v tmate >/dev/null 2>&1 && echo HAVE_TMATE_BIN || echo NO_TMATE_BIN
-command -v getent >/dev/null 2>&1 && getent hosts ssh.tmate.io || echo 'DNS_ssh_tmate=FAIL'
-if command -v nc >/dev/null 2>&1; then
-  timeout 5 nc -z -w 4 ssh.tmate.io 22 >/dev/null 2>&1 && echo 'TCP_22=OK' || echo 'TCP_22=FAIL'
-elif command -v timeout >/dev/null 2>&1; then
-  timeout 5 sh -c 'echo > /dev/tcp/ssh.tmate.io/22' 2>/dev/null && echo 'TCP_22=OK' || echo 'TCP_22=FAIL'
-fi
-if ! command -v tmate >/dev/null 2>&1; then
-  echo 'tmate not installed'
-  exit 2
-fi
-SOCK=/tmp/tmate.sock
-tmate -S "$SOCK" kill-server >/dev/null 2>&1 || true
-rm -f "$SOCK"
-timeout 15 tmate -v -S "$SOCK" new-session -d >/tmp/tmate.log 2>&1
-for i in $(seq 1 {timeout}); do
-  SSH=$(timeout 3 tmate -S "$SOCK" show -qF '#{{tmate_ssh}}' 2>/dev/null)
-  if [ -n "$SSH" ]; then echo "$SSH"; exit 0; fi
-  RO=$(timeout 3 tmate -S "$SOCK" show -qF '#{{tmate_ssh_ro}}' 2>/dev/null)
-  if [ -n "$RO" ]; then echo "$RO"; exit 0; fi
-  sleep 1
-done
-echo 'TMATE_TIMEOUT'
-echo '--- tmate.log ---'
-cat /tmp/tmate.log 2>/dev/null || true
-timeout 3 tmate -S "$SOCK" show-messages 2>/dev/null | tail -n 30 || true
-exit 3
-"""
-        try:
-            code, out = self._run_script(container_id, script, timeout=timeout + 20)
-        except Exception as exc:
-            raise ProviderError(f"tmate exec failed: {exc}") from exc
-        ssh_cmd = self._extract_tmate_ssh(out or "")
-        if not ssh_cmd:
-            clean = self._strip_ansi(out or "")
-            for line in clean.splitlines():
-                line = line.strip()
-                if line and " " not in line.split("@")[0] and "@" in line and "TMATE" not in line:
-                    ssh_cmd = line
-                    break
-            if not ssh_cmd and clean and "@" in clean:
-                ssh_cmd = clean.strip().splitlines()[-1].strip()
-        ssh_cmd = self._strip_ansi(ssh_cmd or "").strip()
-        if not ssh_cmd:
-            hint = ""
-            low = self._strip_ansi(out or "").lower()
-            if "tcp_22=fail" in low or "dns_ssh_tmate=fail" in low:
-                hint = " Outbound to ssh.tmate.io:22 is blocked (common in datacenters)."
-            elif code == 137:
-                hint = " Process was SIGKILLed (OOM or external kill)."
-            elif code == 124:
-                hint = " Timed out waiting for tmate relay."
-            elif "could not resolve" in low or "network" in low or "connection" in low:
-                hint = " Instance may have no outbound network to tmate.io."
-            elif "NO_TMATE" in (install_log or "") or "tmate not installed" in low:
-                hint = " tmate failed to install (apt package + static binary both failed)."
-            tail = self._strip_ansi((out or ""))[-500:].strip()
-            raise ProviderError(
-                "tmate did not return an SSH command "
-                f"(exit {code}).{hint} Details: {tail}"
-            )
-        if not ssh_cmd.startswith("ssh "):
-            ssh_cmd = f"ssh {ssh_cmd}"
-        return ssh_cmd
-
     def stop_remote_share(self, container_id: str, tool: str = "all") -> None:
-        """Best-effort stop of sshx/tmate/ttyd sessions inside an instance."""
+        """Best-effort stop of sshx/ttyd sessions inside an instance."""
         if tool in ("sshx", "all"):
             self.exec_command(
                 container_id,
@@ -1306,12 +1182,6 @@ exit 3
                 "if [ -f /tmp/sshx-keeper.pid ]; then kill \"$(cat /tmp/sshx-keeper.pid 2>/dev/null)\" >/dev/null 2>&1 || true; fi; "
                 "pkill -x sshx >/dev/null 2>&1 || true; "
                 "pkill -f 'tail -f /dev/null' >/dev/null 2>&1 || true; true",
-                timeout=15,
-            )
-        if tool in ("tmate", "all"):
-            self.exec_command(
-                container_id,
-                "tmate -S /tmp/tmate.sock kill-server 2>/dev/null || true; true",
                 timeout=15,
             )
         if tool in ("web", "all"):
@@ -1324,7 +1194,7 @@ exit 3
             )
 
     def start_web_terminal(self, container_id: str, timeout: int = 75) -> dict:
-        """Browser shell via ttyd + localhost.run (works when sshx/tmate relays are blocked).
+        """Browser shell via ttyd + localhost.run (works when sshx relays are blocked).
 
         File manager already proves this tunnel path from the instance.
         """

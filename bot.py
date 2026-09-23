@@ -1346,20 +1346,6 @@ class SSHMethodView(discord.ui.View):
                         f"**sshx**\n```\n{link}\n```",
                     ]
                 )
-            elif method == "tmate":
-                cmd = await asyncio.wait_for(
-                    asyncio.to_thread(bot.provider.start_tmate, row["container_id"]),
-                    timeout=45,
-                )
-                body = "\n".join(
-                    [
-                        f"**SSH — {self.vps_id}**",
-                        f"```\nssh {row['username']}@{row['ip_address']} -p {row['ssh_port'] or 22}\n```",
-                        f"Password: ||{row['password_plain']}||",
-                        "",
-                        f"**tmate**\n```\n{cmd}\n```",
-                    ]
-                )
             else:  # web
                 web = await asyncio.wait_for(
                     asyncio.to_thread(bot.provider.start_web_terminal, row["container_id"]),
@@ -1417,10 +1403,6 @@ class SSHMethodView(discord.ui.View):
     @discord.ui.button(label="Web terminal", style=discord.ButtonStyle.success, emoji="🌐", row=0)
     async def web_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self._run_choice(interaction, "web")
-
-    @discord.ui.button(label="tmate", style=discord.ButtonStyle.secondary, emoji="🖥️", row=0)
-    async def tmate_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self._run_choice(interaction, "tmate")
 
 
 class ManageVPSView(discord.ui.View):
@@ -1767,8 +1749,7 @@ class ManageVPSView(discord.ui.View):
         await interaction.response.send_message(
             f"**SSH access for `{self.vps_id}`** — choose a method:\n"
             "• **sshx** — browser link (`sshx.io`)\n"
-            "• **Web terminal** — browser shell via localhost.run\n"
-            "• **tmate** — `ssh …@….tmate.io` (often blocked)\n\n"
+            "• **Web terminal** — browser shell via localhost.run\n\n"
             f"Direct: `ssh {row['username']}@{row['ip_address']} -p {row['ssh_port'] or 22}`\n"
             f"Password: ||{row['password_plain']}||",
             view=view,

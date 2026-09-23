@@ -182,7 +182,7 @@ PLANS=Starter:1024:1:10:Free,Pro:2048:2:25:Popular:$4,Business:4096:4:50:Best
 | 📁 Files | Web file manager (browse/upload/edit/delete) via **localhost.run** tunnel |
 | 📋 Logs | Last 50 lines of container logs |
 | 🎨 Rebrand | Push current MOTD + `/etc/issue` banners |
-| 🔑 SSH | DM: normal SSH + password + **sshx** (+ tmate if sshx fails) |
+| 🔑 SSH | DM: normal SSH + password + **sshx** / web terminal |
 | 🔐 Password | Modal — change SSH password in place |
 | ⚡ Command | Modal — run a shell command, show exit code + output |
 | 🔁 Reinstall | Two-step confirm — recreates container (same plan/owner), wipes data |
@@ -206,13 +206,12 @@ Also written to `/etc/issue` + `/etc/issue.net` (console/SSH pre-auth banner)
 and `/etc/vexdeploy/brand`. Re-push anytime with dashboard **🎨 Rebrand** or
 `/refresh-motd` / `/brand-reinstall`.
 
-### Reverse SSH (sshx / tmate)
+### Reverse SSH (sshx)
 
 Started from the dashboard **SSH** button when the container has no public IP:
 
 - Tools install on demand inside the container (curl + package manager)
-- sshx is detached via PID file (never `pkill -f` — that killed the launcher)
-- tmate polls `#{tmate_ssh}` / `#{tmate_ssh_ro}` with diagnostics on timeout
+- sshx is detached via PID file with stdin held open (session survives launcher exit)
 - Session lives while the container runs
 - Normal `ssh user@ip -p 22` still works via `/connect_vps` / `/vps_shell`
 
