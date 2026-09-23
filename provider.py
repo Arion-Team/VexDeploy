@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from config import (
     LXD_CLI,
     LXD_NETWORK,
+    LXD_STORAGE,
     MAX_CONTAINERS,
     MAX_CPUS,
     MAX_DISK_GB,
@@ -158,11 +159,14 @@ class LXDProvider:
         self._cli = _detect_cli()
         self._exec_flags = self._detect_exec_flags()
         self.network_name = network
+        self.storage_pool = (LXD_STORAGE or "").strip()
+        self._ensure_storage()
         self._ensure_network()
         logger.info(
-            "LXD provider ready (cli=%s, network=%s, exec=%s)",
+            "LXD provider ready (cli=%s, network=%s, storage=%s, exec=%s)",
             self._cli,
             self.network_name,
+            self.storage_pool or "auto",
             " ".join(self._exec_flags) or "default",
         )
 
@@ -233,6 +237,79 @@ class LXDProvider:
                 continue
             return flags
         return []
+
+    def _list_storage_pools(self) -> list[str]:
+        code, out = self._run(
+            ["storage", "list", "--format", "csv", "-c", "n"],
+            check=False,
+            timeout=30,
+        )
+        if code != 0:
+            return []
+        names: list[str] = []
+        for line in (out or "").splitlines():
+            name = line.strip().strip(",").split(",")[0].strip()
+            if name and name not in names:
+                names.append(name)
+        return names
+
+    def _ensure_storage(self) -> None:
+        """Resolve a storage pool so launch can attach a root disk (-s)."""
+        pools = self._list_storage_pools()
+
+        if self.storage_pool:
+            if self.storage_pool in pools:
+                return
+            if pools:
+                logger.warning(
+                    "LXD_STORAGE=%s not found (pools=%s) — ignoring",
+                    self.storage_pool,
+                    pools,
+                )
+                self.storage_pool = ""
+
+        # prefer well-known names, then any pool
+        if not self.storage_pool:
+            for pref in ("default", "vexdeploy", "local", "backend"):
+                if pref in pools:
+                    self.storage_pool = pref
+                    break
+            if not self.storage_pool and pools:
+                self.storage_pool = pools[0]
+        if self.storage_pool and self.storage_pool in pools:
+            return
+
+        # create a simple dir pool (use LXD_STORAGE name if provided)
+        candidates = []
+        if self.storage_pool:
+            candidates.append(self.storage_pool)
+        for name in ("default", "vexdeploy"):
+            if name not in candidates:
+                candidates.append(name)
+
+        for name in candidates:
+            try:
+                self._run(
+                    ["storage", "create", name, "dir"],
+                    check=False,
+                    timeout=60,
+                )
+                code, _ = self._run(
+                    ["storage", "show", name], check=False, timeout=15
+                )
+                if code == 0:
+                    self.storage_pool = name
+                    logger.info("Created LXD storage pool %s (dir)", name)
+                    return
+            except ProviderError as exc:
+                logger.warning("storage create %s failed: %s", name, exc)
+
+        raise ProviderError(
+            "No LXD/Incus storage pool found. Create one:\n"
+            "  incus storage create default dir\n"
+            "  # or: lxc storage create default dir\n"
+            "then set LXD_STORAGE=default in .env"
+        )
 
     def _ensure_network(self) -> None:
         code, _ = self._run(
@@ -411,6 +488,8 @@ class LXDProvider:
             "-c",
             f"{LABEL_VPS_ID}={vps_id or ''}",
         ]
+        if self.storage_pool:
+            args.extend(["-s", self.storage_pool])
         # first pull can take a while on cold cache
         launch_timeout = int(os.environ.get("LXD_LAUNCH_TIMEOUT", "600"))
 

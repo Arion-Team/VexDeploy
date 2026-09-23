@@ -28,6 +28,7 @@ ADMIN_ROLE_ID = int(os.getenv("ADMIN_ROLE_ID", "1376177459870961694") or 0)
 # LXD defaults
 LXD_NETWORK = os.getenv("LXD_NETWORK", "vexdeploy")
 LXD_CLI = os.getenv("LXD_CLI", "").strip()
+LXD_STORAGE = os.getenv("LXD_STORAGE", "").strip()
 DEFAULT_OS_IMAGE = os.getenv("DEFAULT_OS_IMAGE", "ubuntu:22.04")
 MAX_CONTAINERS = int(os.getenv("MAX_CONTAINERS", "100"))
 

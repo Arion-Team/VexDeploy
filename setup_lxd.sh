@@ -3,6 +3,7 @@
 set -euo pipefail
 
 NETWORK="${LXD_NETWORK:-vexdeploy}"
+STORAGE="${LXD_STORAGE:-}"
 ENV_FILE="${ENV_FILE:-.env}"
 
 log()  { printf '\n==> %s\n' "$*"; }
@@ -278,6 +279,52 @@ ensure_network() {
   fi
 }
 
+ensure_storage() {
+  local cli
+  cli="$(detect_cli)"
+
+  # list pool names (csv)
+  local pools
+  pools="$("$cli" storage list --format csv -c n 2>/dev/null | tr -d '"' || true)"
+  if [[ -n "$pools" ]]; then
+    if [[ -z "$STORAGE" ]]; then
+      # prefer known names
+      local p
+      for p in default vexdeploy local backend; do
+        if echo "$pools" | tr ',' '\n' | grep -qx "$p"; then
+          STORAGE="$p"
+          break
+        fi
+      done
+      if [[ -z "$STORAGE" ]]; then
+        STORAGE="$(echo "$pools" | head -n1 | cut -d, -f1)"
+      fi
+    fi
+    ok "storage pool: $STORAGE (available: $(echo "$pools" | tr '\n' ' '))"
+    return
+  fi
+
+  log "No storage pool — creating default (dir)"
+  if "$cli" storage create default dir >/dev/null 2>&1 \
+    || "$cli" storage create vexdeploy dir >/dev/null 2>&1; then
+    STORAGE="${STORAGE:-default}"
+    ok "created storage pool $STORAGE"
+  else
+    # maybe partially created
+    if "$cli" storage show default >/dev/null 2>&1; then
+      STORAGE="default"
+    elif "$cli" storage show vexdeploy >/dev/null 2>&1; then
+      STORAGE="vexdeploy"
+    fi
+    if [[ -n "$STORAGE" ]]; then
+      ok "storage pool exists: $STORAGE"
+    else
+      warn "could not create storage pool — launch may fail with 'No root device'"
+      echo "    Manual: $cli storage create default dir"
+    fi
+  fi
+}
+
 warm_images() {
   local cli
   cli="$(detect_cli)"
@@ -316,7 +363,15 @@ update_env() {
     echo "LXD_NETWORK=$NETWORK" >> "$env_path"
   fi
 
-  ok "Updated $env_path (LXD_CLI=$cli, LXD_NETWORK=$NETWORK)"
+  if [[ -n "$STORAGE" ]]; then
+    if grep -q '^LXD_STORAGE=' "$env_path"; then
+      sed -i "s|^LXD_STORAGE=.*|LXD_STORAGE=$STORAGE|" "$env_path"
+    else
+      echo "LXD_STORAGE=$STORAGE" >> "$env_path"
+    fi
+  fi
+
+  ok "Updated $env_path (LXD_CLI=$cli, LXD_NETWORK=$NETWORK, LXD_STORAGE=$STORAGE)"
 }
 
 verify() {
@@ -334,6 +389,12 @@ verify() {
     ok "network $NETWORK"
   else
     warn "network $NETWORK missing"
+  fi
+
+  if [[ -n "$STORAGE" ]] && "$cli" storage show "$STORAGE" >/dev/null 2>&1; then
+    ok "storage $STORAGE"
+  else
+    warn "storage pool missing — create with: $cli storage create default dir"
   fi
 
   echo ""
