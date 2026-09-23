@@ -1064,28 +1064,28 @@ tail -n 20 /tmp/vex-sshx-install.log 2>/dev/null || true
         return ""
 
     def start_sshx(self, container_id: str, timeout: int = 25) -> str:
-        """Install sshx if needed and return a share URL/SSH command.
+        """Install sshx if needed and return a share URL.
 
-        Tries three capture paths because sshx buffers without a TTY:
-        1) binary under script(1) PTY
-        2) binary under stdbuf
-        3) official `curl | sh -s run` (what CI uses — prints URL to stdout)
+        sshx must keep a live process after the URL is printed. Redirecting
+        stdin to /dev/null (or wrapping in `timeout`) makes it exit on EOF —
+        link opens but "create terminal" does nothing. Hold stdin open with
+        `tail -f /dev/null` and never time-box the sshx process itself.
         """
         install_log = self._ensure_remote_tools(container_id)
 
         script = f"""set +e
 export TERM=xterm-256color
-if [ -f /tmp/sshx.pid ]; then kill "$(cat /tmp/sshx.pid 2>/dev/null)" >/dev/null 2>&1 || true; fi
+# stop previous session + stdin keepers
+for f in /tmp/sshx.pid /tmp/sshx-keeper.pid; do
+  if [ -f "$f" ]; then kill "$(cat "$f" 2>/dev/null)" >/dev/null 2>&1 || true; fi
+done
 pkill -x sshx >/dev/null 2>&1 || true
-rm -f /tmp/sshx.log /tmp/sshx.pid /tmp/sshx.out /tmp/sshx.typescript /tmp/sshx-run.log
+pkill -f 'tail -f /dev/null' >/dev/null 2>&1 || true
+rm -f /tmp/sshx.log /tmp/sshx.pid /tmp/sshx.out /tmp/sshx.typescript /tmp/sshx-run.log /tmp/sshx-keeper.pid
 : > /tmp/sshx.log
 echo '--- sshx diag ---'
 command -v sshx >/dev/null 2>&1 && echo HAVE_SSHX_BIN || echo NO_SSHX_BIN
 command -v sshx >/dev/null 2>&1 && ls -l "$(command -v sshx)" 2>/dev/null || true
-command -v script >/dev/null 2>&1 && echo HAVE_SCRIPT || echo NO_SCRIPT
-if command -v curl >/dev/null 2>&1; then
-  timeout 8 curl -sS -o /dev/null -w 'https_sshx_io=%{{http_code}}\\n' --connect-timeout 5 https://sshx.io/get || echo 'https_sshx_io=FAIL'
-fi
 
 extract_link() {{
   cat /tmp/sshx.log /tmp/sshx.typescript /tmp/sshx-run.log 2>/dev/null \\
@@ -1104,66 +1104,99 @@ wait_for_link() {{
   extract_link
 }}
 
-# --- try 1: existing binary under a PTY ---
+alive() {{
+  [ -f /tmp/sshx.pid ] || return 1
+  PID=$(cat /tmp/sshx.pid 2>/dev/null)
+  [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null
+}}
+
+# stdin keeper: sshx treats stdin EOF as quit — keep the pipe open forever
+( sleep 100000 ) &
+echo $! > /tmp/sshx-keeper.pid
+
+# --- try 1: installed binary, stdin held open (no timeout on the process) ---
 if command -v sshx >/dev/null 2>&1; then
   if command -v script >/dev/null 2>&1; then
-    setsid script -q -e -c 'sshx' /tmp/sshx.typescript </dev/null >/tmp/sshx.log 2>&1 &
-  elif command -v stdbuf >/dev/null 2>&1; then
-    setsid stdbuf -oL -eL sshx </dev/null >/tmp/sshx.log 2>&1 &
+    # PTY via script; stdin from keeper pipe so sshx does not see EOF
+    tail -f /dev/null | setsid script -q -e -c 'sshx' /tmp/sshx.typescript >/tmp/sshx.log 2>&1 &
   else
-    setsid sshx </dev/null >/tmp/sshx.log 2>&1 &
+    tail -f /dev/null | setsid sshx >/tmp/sshx.log 2>&1 &
   fi
-  echo $! > /tmp/sshx.pid
+  # $! is the tail (left side of pipe) in some shells — find sshx after start
+  sleep 0.3
+  SSHX_PID=$(pgrep -x sshx 2>/dev/null | head -n1)
+  if [ -z "$SSHX_PID" ]; then
+    SSHX_PID=$(pgrep -f 'script .*sshx' 2>/dev/null | head -n1)
+  fi
+  echo "${{SSHX_PID:-$!}}" > /tmp/sshx.pid
   LINK=$(wait_for_link {timeout})
-  if [ -n "$LINK" ]; then
+  sleep 1
+  if [ -n "$LINK" ] && alive; then
     echo "LINK=$LINK"
+    echo "PID=$(cat /tmp/sshx.pid)"
     echo SSHX_OK
     exit 0
   fi
-  # kill partial attempt before next method
+  # dead or no link — clean up and try run mode
   if [ -f /tmp/sshx.pid ]; then kill "$(cat /tmp/sshx.pid)" >/dev/null 2>&1 || true; fi
   pkill -x sshx >/dev/null 2>&1 || true
 fi
 
-# --- try 2: official CI runner (prints URL even without TTY) ---
+# --- try 2: official runner, also without killing sshx after N seconds ---
 echo '--- sshx run mode ---'
+( sleep 100000 ) &
+echo $! > /tmp/sshx-keeper.pid
 if [ -f /tmp/sshx-get.sh ]; then
-  timeout {max(20, timeout)} sh -c 'sh /tmp/sshx-get.sh run' >/tmp/sshx-run.log 2>&1 &
+  tail -f /dev/null | setsid sh -c 'sh /tmp/sshx-get.sh run' >/tmp/sshx-run.log 2>&1 &
 elif command -v curl >/dev/null 2>&1; then
-  timeout {max(20, timeout)} sh -c 'curl -sSf https://sshx.io/get | sh -s run' >/tmp/sshx-run.log 2>&1 &
+  tail -f /dev/null | setsid sh -c 'curl -sSf https://sshx.io/get | sh -s run' >/tmp/sshx-run.log 2>&1 &
 else
   echo 'no sshx runner (need binary or curl)'
 fi
-RUN_PID=$!
-echo $RUN_PID > /tmp/sshx.pid
+sleep 0.3
+SSHX_PID=$(pgrep -x sshx 2>/dev/null | head -n1)
+if [ -z "$SSHX_PID" ]; then
+  SSHX_PID=$(pgrep -f 'sshx' 2>/dev/null | head -n1)
+fi
+echo "${{SSHX_PID:-$!}}" > /tmp/sshx.pid
 LINK=$(wait_for_link {timeout})
-if [ -n "$LINK" ]; then
+sleep 1
+if [ -n "$LINK" ] && alive; then
   echo "LINK=$LINK"
+  echo "PID=$(cat /tmp/sshx.pid)"
   echo SSHX_OK
   exit 0
 fi
 
-# --- diagnostics if still no link ---
 echo '--- sshx.log ---'
 cat /tmp/sshx.log 2>/dev/null || true
 echo '--- sshx.typescript ---'
 cat /tmp/sshx.typescript 2>/dev/null || true
 echo '--- sshx-run.log ---'
 cat /tmp/sshx-run.log 2>/dev/null || true
+if [ -n "$LINK" ]; then
+  echo "LINK_DEAD=$LINK"
+fi
 echo SSHX_NO_LINK
 exit 3
 """
         try:
-            code, out = self._run_script(container_id, script, timeout=timeout + 25)
+            code, out = self._run_script(container_id, script, timeout=timeout + 30)
         except Exception as exc:
             raise ProviderError(f"sshx exec failed: {exc}") from exc
         out = self._strip_ansi(out or "")
 
         url = ""
         for line in out.splitlines():
-            if line.startswith("LINK=") and line[5:].strip():
+            if line.startswith("LINK=") and line[5:].strip() and not line.startswith("LINK_DEAD"):
                 url = self._extract_sshx_url(line[5:].strip()) or line[5:].strip()
                 break
+            if line.startswith("LINK_DEAD="):
+                dead = line[10:].strip()
+                raise ProviderError(
+                    "sshx printed a link but the process exited immediately "
+                    f"(session dead): {dead}"
+                )
         if not url:
             url = self._extract_sshx_url(out)
         if not url:
@@ -1179,6 +1212,16 @@ exit 3
             raise ProviderError(
                 "sshx did not return a share link "
                 f"(exit {code}). Output: {tail or 'empty'}"
+            )
+        # final liveness check
+        _, alive_chk = self.exec_command(
+            container_id,
+            "if [ -f /tmp/sshx.pid ] && kill -0 \"$(cat /tmp/sshx.pid)\" 2>/dev/null; then echo ALIVE; else echo DEAD; fi",
+            timeout=10,
+        )
+        if "DEAD" in (alive_chk or ""):
+            raise ProviderError(
+                f"sshx process is not running after start (link may be dead): {url}"
             )
         return url
 
@@ -1261,6 +1304,7 @@ exit 3
             self.exec_command(
                 container_id,
                 "if [ -f /tmp/sshx.pid ]; then kill \"$(cat /tmp/sshx.pid 2>/dev/null)\" >/dev/null 2>&1 || true; fi; "
+                "if [ -f /tmp/sshx-keeper.pid ]; then kill \"$(cat /tmp/sshx-keeper.pid 2>/dev/null)\" >/dev/null 2>&1 || true; fi; "
                 "pkill -x sshx >/dev/null 2>&1 || true; true",
                 timeout=15,
             )
