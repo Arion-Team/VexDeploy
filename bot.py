@@ -1632,16 +1632,39 @@ class ManageVPSView(discord.ui.View):
             f"**SSH — {self.vps_id}**",
             f"```\nssh {row['username']}@{row['ip_address']} -p {row['ssh_port'] or 22}\n```",
             f"Password: ||{row['password_plain']}||",
+            "",
+            "_Preparing reverse shell (sshx)… first click installs tools (~10–40s)._",
         ]
         try:
-            link = await asyncio.to_thread(bot.provider.start_sshx, row["container_id"])
+            link = await asyncio.wait_for(
+                asyncio.to_thread(bot.provider.start_sshx, row["container_id"]),
+                timeout=90,
+            )
+            lines = lines[:4]
             lines.append(f"**sshx**\n```\n{link}\n```")
-        except Exception as exc:
-            lines.append(f"sshx: `{exc}`")
-            # only bother with tmate when sshx failed
+        except asyncio.TimeoutError:
+            lines = lines[:4]
+            lines.append("sshx: timed out after 90s (install/network).")
             try:
-                cmd = await asyncio.to_thread(bot.provider.start_tmate, row["container_id"])
+                cmd = await asyncio.wait_for(
+                    asyncio.to_thread(bot.provider.start_tmate, row["container_id"]),
+                    timeout=45,
+                )
                 lines.append(f"**tmate**\n```\n{cmd}\n```")
+            except Exception as exc2:
+                lines.append(f"tmate: `{exc2}`")
+        except Exception as exc:
+            lines = lines[:4]
+            lines.append(f"sshx: `{exc}`")
+            # only bother with tmate when sshx failed (tools install is cached)
+            try:
+                cmd = await asyncio.wait_for(
+                    asyncio.to_thread(bot.provider.start_tmate, row["container_id"]),
+                    timeout=45,
+                )
+                lines.append(f"**tmate**\n```\n{cmd}\n```")
+            except asyncio.TimeoutError:
+                lines.append("tmate: timed out after 45s.")
             except Exception as exc2:
                 lines.append(f"tmate: `{exc2}`")
         body = "\n".join(lines)

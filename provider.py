@@ -160,6 +160,7 @@ class LXDProvider:
         self._exec_flags = self._detect_exec_flags()
         self.network_name = network
         self.storage_pool = (LXD_STORAGE or "").strip()
+        self._tools_cache: dict[str, str] = {}
         self._ensure_storage()
         self._ensure_network()
         logger.info(
@@ -774,6 +775,7 @@ class LXDProvider:
         if force:
             args.append("--force")
         code, out = self._run(args, check=False, timeout=90)
+        self._tools_cache.pop(container_id, None)
         if code != 0:
             low = (out or "").lower()
             if "not found" in low or "does not exist" in low:
@@ -819,12 +821,13 @@ class LXDProvider:
     def exec_command(
         self, container_id: str, command: str, timeout: int = 60
     ) -> tuple[int, str]:
+        # sh (not bash) — minimal images / Alpine may lack bash
         args = [
             "exec",
             container_id,
             *self._exec_flags,
             "--",
-            "bash",
+            "sh",
             "-lc",
             command,
         ]
@@ -850,30 +853,59 @@ class LXDProvider:
         return raw or out or ""
 
     # ── reverse SSH (sshx / tmate) ──────────────────────────
-    def _ensure_remote_tools(self, container_id: str) -> str:
-        """Install curl/tmate/sshx. Returns a status log for diagnostics.
+    def _ensure_remote_tools(self, container_id: str, *, force: bool = False) -> str:
+        """Install curl/sshx/tmate once per instance (cached).
 
-        Scripts are written to a file (no nested quotes / single-line # comments).
+        A full apt + download pass used to run on every sshx *and* tmate attempt
+        (~3 min each) — SSH button then stacked both for ~10 min. Probe first;
+        only install when missing; cache the log so the tmate fallback is free.
         """
+        if not force and container_id in self._tools_cache:
+            return self._tools_cache[container_id]
+
+        # Fast path: tools already present (or a prior run left a ready marker).
+        try:
+            _, probe = self.exec_command(
+                container_id,
+                "if [ -f /tmp/vex-tools.ready ]; then echo TOOLS_READY; fi; "
+                "command -v sshx >/dev/null 2>&1 && echo HAVE_SSHX || echo NO_SSHX; "
+                "command -v tmate >/dev/null 2>&1 && echo HAVE_TMATE || echo NO_TMATE; "
+                "command -v curl >/dev/null 2>&1 && echo HAVE_CURL || echo NO_CURL",
+                timeout=12,
+            )
+        except Exception as exc:
+            probe = f"probe error: {exc}"
+        text = probe or ""
+        if "TOOLS_READY" in text or (
+            "HAVE_SSHX" in text and "HAVE_TMATE" in text and "HAVE_CURL" in text
+        ):
+            self._tools_cache[container_id] = text
+            return text
+
+        # Install pass — tight timeouts (worst ~70s, usually much less).
         script = r"""set +e
 export DEBIAN_FRONTEND=noninteractive
 export APT_LISTCHANGES_FRONTEND=none
 echo '--- install ---'
 if command -v apt-get >/dev/null 2>&1; then
-  timeout 60 apt-get update -qq >/tmp/vex-apt.log 2>&1 || true
-  timeout 90 apt-get install -y -qq --no-install-recommends curl ca-certificates tmate \
-    >>/tmp/vex-apt.log 2>&1 || \
-  timeout 60 apt-get install -y -qq --no-install-recommends curl ca-certificates \
-    >>/tmp/vex-apt.log 2>&1 || true
+  # try without update first (existing lists are often enough / faster)
+  timeout 40 apt-get install -y -qq --no-install-recommends curl ca-certificates tmate \
+    >>/tmp/vex-apt.log 2>&1 || {
+    timeout 20 apt-get update -qq >/tmp/vex-apt.log 2>&1 || true
+    timeout 35 apt-get install -y -qq --no-install-recommends curl ca-certificates tmate \
+      >>/tmp/vex-apt.log 2>&1 || \
+    timeout 25 apt-get install -y -qq --no-install-recommends curl ca-certificates \
+      >>/tmp/vex-apt.log 2>&1 || true
+  }
 elif command -v apk >/dev/null 2>&1; then
-  timeout 60 apk add --no-cache curl ca-certificates tmate >/tmp/vex-apt.log 2>&1 || \
-  timeout 60 apk add --no-cache curl ca-certificates >>/tmp/vex-apt.log 2>&1 || true
+  timeout 35 apk add --no-cache curl ca-certificates tmate >/tmp/vex-apt.log 2>&1 || \
+  timeout 25 apk add --no-cache curl ca-certificates >>/tmp/vex-apt.log 2>&1 || true
 elif command -v yum >/dev/null 2>&1; then
-  timeout 90 yum install -y curl ca-certificates tmate >/tmp/vex-apt.log 2>&1 || \
-  timeout 60 yum install -y curl ca-certificates >>/tmp/vex-apt.log 2>&1 || true
+  timeout 40 yum install -y curl ca-certificates tmate >/tmp/vex-apt.log 2>&1 || \
+  timeout 25 yum install -y curl ca-certificates >>/tmp/vex-apt.log 2>&1 || true
 fi
 
-# tmate: static binary fallback (image may lack package / universe)
+# tmate: static binary fallback
 if ! command -v tmate >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
   echo 'tmate: trying static binary'
   ARCH=$(uname -m)
@@ -887,7 +919,7 @@ if ! command -v tmate >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
   esac
   TM_VER=2.4.0
   TM_URL="https://github.com/tmate-io/tmate/releases/download/${TM_VER}/tmate-${TM_VER}-static-linux-${TA}.tar.xz"
-  if timeout 45 curl -fsSL --retry 2 --connect-timeout 10 "$TM_URL" -o /tmp/tmate.tar.xz; then
+  if timeout 20 curl -fsSL --retry 1 --connect-timeout 8 "$TM_URL" -o /tmp/tmate.tar.xz; then
     mkdir -p /tmp/tmate-extract
     if tar -xJf /tmp/tmate.tar.xz -C /tmp/tmate-extract 2>/tmp/vex-tmate-extract.log; then
       SRC=$(find /tmp/tmate-extract -type f -name tmate 2>/dev/null | head -n1)
@@ -901,35 +933,47 @@ if ! command -v tmate >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
   fi
 fi
 
-# sshx: official installer (GitHub releases ship no binary assets)
+# sshx: official installer
 if ! command -v sshx >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
   echo 'sshx: official installer'
-  if timeout 45 curl -sSf --retry 2 --connect-timeout 10 https://sshx.io/get -o /tmp/sshx-get.sh; then
-    timeout 30 sh /tmp/sshx-get.sh >/tmp/vex-sshx-install.log 2>&1 || \
+  if timeout 20 curl -sSf --retry 1 --connect-timeout 8 https://sshx.io/get -o /tmp/sshx-get.sh; then
+    timeout 25 sh /tmp/sshx-get.sh >/tmp/vex-sshx-install.log 2>&1 || \
       echo 'sshx installer failed'
   else
     echo 'sshx get script download failed'
   fi
 fi
 
+# find common install prefixes if not on PATH
+for d in /usr/local/bin /usr/bin "$HOME/.local/bin" /root/.cargo/bin; do
+  if [ -x "$d/sshx" ] && ! command -v sshx >/dev/null 2>&1; then
+    ln -sf "$d/sshx" /usr/local/bin/sshx 2>/dev/null || cp -f "$d/sshx" /usr/local/bin/sshx 2>/dev/null || true
+  fi
+done
+
 command -v sshx >/dev/null 2>&1 && echo HAVE_SSHX || echo NO_SSHX
 command -v tmate >/dev/null 2>&1 && echo HAVE_TMATE || echo NO_TMATE
 command -v curl >/dev/null 2>&1 && echo HAVE_CURL || echo NO_CURL
+if command -v sshx >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+  echo TOOLS_READY > /tmp/vex-tools.ready
+  echo TOOLS_READY
+fi
 echo '--- apt tail ---'
-tail -n 40 /tmp/vex-apt.log 2>/dev/null || true
-echo '--- tmate extract tail ---'
-tail -n 20 /tmp/vex-tmate-extract.log 2>/dev/null || true
+tail -n 30 /tmp/vex-apt.log 2>/dev/null || true
 echo '--- sshx install tail ---'
-tail -n 30 /tmp/vex-sshx-install.log 2>/dev/null || true
+tail -n 20 /tmp/vex-sshx-install.log 2>/dev/null || true
 """
         try:
-            code, out = self._run_script(container_id, script, timeout=180)
+            code, out = self._run_script(container_id, script, timeout=70)
         except Exception as exc:
             logger.warning("remote tools install failed: %s", exc)
-            return f"install error: {exc}"
+            text = f"install error: {exc}"
+            self._tools_cache[container_id] = text
+            return text
         text = out or ""
         if "NO_SSHX" in text or "NO_TMATE" in text:
             logger.warning("remote tools partial (exit %s): %s", code, text[-800:])
+        self._tools_cache[container_id] = text
         return text
 
     def _run_script(
@@ -939,10 +983,11 @@ tail -n 30 /tmp/vex-sshx-install.log 2>/dev/null || true
         import base64
 
         b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
+        # sh, not bash — Alpine / minimal images may not ship bash
         wrapper = (
             f"echo {b64} | base64 -d > /tmp/vex-run.sh && "
             f"chmod +x /tmp/vex-run.sh && "
-            f"timeout {max(5, int(timeout))} bash /tmp/vex-run.sh"
+            f"timeout {max(5, int(timeout))} sh /tmp/vex-run.sh"
         )
         return self.exec_command(container_id, wrapper, timeout=timeout + 15)
 
@@ -985,7 +1030,7 @@ tail -n 30 /tmp/vex-sshx-install.log 2>/dev/null || true
                 return line.rstrip(".,);'\"")
         return ""
 
-    def start_sshx(self, container_id: str, timeout: int = 45) -> str:
+    def start_sshx(self, container_id: str, timeout: int = 20) -> str:
         """Install sshx if needed and return a share URL/SSH command.
 
         Uses the official installer (GitHub releases have no binary assets).
@@ -1009,10 +1054,10 @@ if command -v sshx >/dev/null 2>&1; then
   cat /tmp/sshx.log 2>/dev/null || true
 else
   if [ -f /tmp/sshx-get.sh ]; then
-    timeout {timeout} sh /tmp/sshx-get.sh run >/tmp/sshx.log 2>&1
+    timeout {max(15, timeout)} sh /tmp/sshx-get.sh run >/tmp/sshx.log 2>&1
     cat /tmp/sshx.log 2>/dev/null || true
   elif command -v curl >/dev/null 2>&1; then
-    timeout {timeout} sh -c 'curl -sSf https://sshx.io/get | sh -s run' >/tmp/sshx.log 2>&1
+    timeout {max(15, timeout)} sh -c 'curl -sSf https://sshx.io/get | sh -s run' >/tmp/sshx.log 2>&1
     cat /tmp/sshx.log 2>/dev/null || true
   else
     echo 'sshx binary missing and curl unavailable'
@@ -1021,7 +1066,7 @@ else
 fi
 """
         try:
-            code, out = self._run_script(container_id, script, timeout=timeout + 45)
+            code, out = self._run_script(container_id, script, timeout=timeout + 15)
         except Exception as exc:
             raise ProviderError(f"sshx exec failed: {exc}") from exc
         url = self._extract_sshx_url(out or "")
@@ -1039,8 +1084,11 @@ fi
             )
         return url
 
-    def start_tmate(self, container_id: str, timeout: int = 30) -> str:
-        """Install tmate if needed and return an SSH share command."""
+    def start_tmate(self, container_id: str, timeout: int = 15) -> str:
+        """Install tmate if needed and return an SSH share command.
+
+        Reuses the cached install from start_sshx — does not re-run apt.
+        """
         install_log = self._ensure_remote_tools(container_id)
         script = f"""set +e
 if ! command -v tmate >/dev/null 2>&1; then
@@ -1064,7 +1112,7 @@ timeout 3 tmate -S "$SOCK" show 2>/dev/null | head -n 20 || true
 exit 3
 """
         try:
-            code, out = self._run_script(container_id, script, timeout=timeout + 30)
+            code, out = self._run_script(container_id, script, timeout=timeout + 15)
         except Exception as exc:
             raise ProviderError(f"tmate exec failed: {exc}") from exc
         ssh_cmd = self._extract_tmate_ssh(out or "")
