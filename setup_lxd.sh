@@ -34,39 +34,120 @@ ensure_root() {
   fi
 }
 
+apt_try() {
+  # run apt without aborting the whole script under set -e
+  "$@" && return 0
+  return 1
+}
+
+enable_backports() {
+  if grep -qE 'bookworm-backports' /etc/apt/sources.list 2>/dev/null; then
+    return 0
+  fi
+  if ls /etc/apt/sources.list.d/*.list >/dev/null 2>&1 \
+    && grep -qE 'bookworm-backports' /etc/apt/sources.list.d/*.list 2>/dev/null; then
+    return 0
+  fi
+  if ls /etc/apt/sources.list.d/*.sources >/dev/null 2>&1 \
+    && grep -qE 'bookworm-backports' /etc/apt/sources.list.d/*.sources 2>/dev/null; then
+    return 0
+  fi
+  echo "deb http://deb.debian.org/debian bookworm-backports main" \
+    > /etc/apt/sources.list.d/bookworm-backports.list
+}
+
+install_incus_base() {
+  # containers only — VexDeploy never uses --vm, so we skip qemu/backports VM deps
+  local tried=0
+
+  log "Trying incus-base (containers only)"
+  if apt_try apt-get install -y -qq incus-base; then
+    ok "incus-base installed (distro repo)"
+    return 0
+  fi
+  tried=1
+
+  if apt-cache show incus-base >/dev/null 2>&1 || apt-cache show incus >/dev/null 2>&1; then
+    log "Trying bookworm-backports (incus-base)"
+    enable_backports
+    apt_try apt-get update -qq || true
+    if apt_try apt-get install -y -qq -t bookworm-backports incus-base; then
+      ok "incus-base installed (bookworm-backports)"
+      return 0
+    fi
+    if apt_try apt-get install -y -qq -t bookworm-backports incus-base \
+      || apt_try apt-get install -y -qq -t bookworm-backports \
+         incus-base incus-client incus-agent; then
+      ok "incus-base installed (bookworm-backports)"
+      return 0
+    fi
+  fi
+
+  log "Adding Zabbly Incus apt repository"
+  . /etc/os-release
+  install -d -m 0755 /etc/apt/keyrings
+  if ! curl -fsSL https://pkgs.zabbly.com/key.asc -o /etc/apt/keyrings/zabbly.asc; then
+    warn "Could not download Zabbly key"
+  else
+    local arch
+    arch="$(dpkg --print-architecture)"
+    cat > /etc/apt/sources.list.d/zabbly-incus-stable.sources <<EOF
+Enabled: yes
+Types: deb
+URIs: https://pkgs.zabbly.com/incus/stable
+Suites: ${VERSION_CODENAME}
+Components: main
+Architectures: ${arch}
+Signed-By: /etc/apt/keyrings/zabbly.asc
+EOF
+    echo "deb [signed-by=/etc/apt/keyrings/zabbly.asc] https://pkgs.zabbly.com/incus/stable ${VERSION_CODENAME} main" \
+      > /etc/apt/sources.list.d/incus.list
+    apt_try apt-get update -qq || true
+    if apt_try apt-get install -y -qq incus-base; then
+      ok "incus-base installed (Zabbly)"
+      return 0
+    fi
+    if apt_try apt-get install -y -qq incus; then
+      ok "incus installed (Zabbly)"
+      return 0
+    fi
+  fi
+
+  # last-ditch: full package name variants
+  apt_try apt-get install -y -qq -t bookworm-backports \
+    incus-base incus-client || true
+
+  command -v incus >/dev/null 2>&1
+}
+
 install_backend() {
   if [[ -n "$(detect_cli)" ]]; then
     ok "CLI already present: $(detect_cli)"
     return
   fi
 
-  log "No lxc/incus found — installing Incus via apt"
+  log "No lxc/incus found — installing Incus"
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq || true
+  apt_try apt-get update -qq || true
 
-  if apt-cache show incus >/dev/null 2>&1; then
-    apt-get install -y -qq incus
-  else
-    log "Adding Incus apt repository"
-    . /etc/os-release
-    install -d -m 0755 /etc/apt/keyrings
-    curl -fsSL https://pkgs.zabbly.com/incus/stable/key \
-      | gpg --dearmor -o /etc/apt/keyrings/incus.gpg
-    echo "deb [signed-by=/etc/apt/keyrings/incus.gpg] https://pkgs.zabbly.com/incus/stable ${UBUNTU_CODENAME:-$(. /etc/os-release && echo "$VERSION_CODENAME")} main" \
-      > /etc/apt/sources.list.d/incus.list
-    apt-get update -qq
-    apt-get install -y -qq incus
-  fi
-
-  if ! command -v incus >/dev/null 2>&1; then
+  if ! install_incus_base; then
     log "apt Incus failed — trying snap LXD"
-    apt-get install -y -qq snapd apparmor || true
+    apt_try apt-get install -y -qq snapd apparmor || true
     systemctl enable --now snapd snapd.apparmor snapd.socket 2>/dev/null || true
     sleep 2
-    snap install lxd
+    snap install lxd || true
   fi
 
-  [[ -n "$(detect_cli)" ]] || die "Install failed — set LXD_CLI manually"
+  # full package if base missing binary but full is fine
+  if ! command -v incus >/dev/null 2>&1; then
+    apt_try apt-get install -y -qq -t bookworm-backports incus || true
+  fi
+
+  [[ -n "$(detect_cli)" ]] || die "Install failed. Try manually:
+  apt-get install -y -t bookworm-backports incus-base
+  # or: apt-get install incus-base
+  # or: snap install lxd
+  then set LXD_CLI in .env"
   ok "Installed: $(detect_cli)"
 }
 

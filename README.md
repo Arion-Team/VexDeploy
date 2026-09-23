@@ -77,6 +77,7 @@ pip install -r requirements.txt
 git clone https://github.com/Arion-Team/VexDeploy.git
 cd VexDeploy
 # install/configure LXD or Incus (remotes, network, .env LXD_CLI)
+# Debian bookworm: prefers incus-base (containers only) to avoid qemu/backports conflicts
 sudo bash setup_lxd.sh
 cp .env.example .env
 # edit .env — set DISCORD_TOKEN
