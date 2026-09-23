@@ -944,15 +944,18 @@ exit 3
 
         text = LXDProvider._strip_ansi(text)
         for pat in (
-            r"https://[A-Za-z0-9._-]+\.localhost\.run",
-            r"https://\S*localhost\.run\S*",
-            r"(?<![A-Za-z0-9._/-])[A-Za-z0-9._-]+\.localhost\.run(?![A-Za-z0-9._-])",
+            r"https://[A-Za-z0-9._-]+\.localhost\.run[A-Za-z0-9._/-]*",
+            r"https://[A-Za-z0-9._-]+\.lhr\.(?:life|link|rocks)[A-Za-z0-9._/-]*",
+            r"https://[A-Za-z0-9._-]+\.lhrtunnel\.link[A-Za-z0-9._/-]*",
+            r"[A-Za-z0-9._-]+\.localhost\.run",
+            r"[A-Za-z0-9._-]+\.lhr\.(?:life|link|rocks)",
+            r"[A-Za-z0-9._-]+\.lhrtunnel\.link",
         ):
             m = re.search(pat, text, re.IGNORECASE)
             if m:
                 url = m.group(0).strip().rstrip(".,);'\"")
                 if not url.lower().startswith("http"):
-                    url = f"https://{url}"
+                    url = "https://" + url
                 return url
         return ""
 

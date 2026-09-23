@@ -1536,7 +1536,7 @@ class ManageVPSView(discord.ui.View):
         embed.add_field(name="URL", value=f"[Open](<{info['url']}>)", inline=False)
         embed.add_field(name="Token", value=f"||`{info['token']}`||", inline=True)
         embed.add_field(name="Port", value=f"`{info['port']}` (localhost only)", inline=True)
-        embed.set_footer(text="localhost.run URL · no screening wall · token required · /stop_file_manager")
+        embed.set_footer(text="Free localhost.run URL · token required · /stop_file_manager")
         try:
             await interaction.user.send(embed=embed)
             await interaction.followup.send("📁 File manager URL sent via DM.", ephemeral=True)
@@ -1752,7 +1752,7 @@ async def file_manager_cmd(ctx: commands.Context, vps_id: str) -> None:
     embed.add_field(name="URL", value=f"[Open](<{info['url']}>)", inline=False)
     embed.add_field(name="Token", value=f"||`{info['token']}`||", inline=True)
     embed.add_field(name="Port", value=f"`{info['port']}` (localhost only)", inline=True)
-    embed.set_footer(text="localhost.run URL · no screening wall · token required · dashboard 📁 Files")
+    embed.set_footer(text="Free localhost.run URL · token required · dashboard 📁 Files")
     try:
         await ctx.author.send(embed=embed)
         await ctx.send("📁 File manager URL sent via DM.", ephemeral=True)

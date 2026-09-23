@@ -446,7 +446,7 @@ if __name__ == "__main__":
 
 
 def build_start_script(token: str, port: int = 8765) -> str:
-    """Free non-auth localhost.run tunnel: ssh -R 80:localhost:PORT localhost.run"""
+    """Free non-auth tunnel: ssh -R 80:localhost:PORT nokey@localhost.run"""
     import base64
 
     fm_b64 = base64.b64encode(FILE_MANAGER_PY.encode("utf-8")).decode("ascii")
@@ -482,39 +482,26 @@ printf '#!/bin/sh\\necho\\n' > /tmp/vex-askpass.sh
 chmod +x /tmp/vex-askpass.sh
 export DISPLAY=:0 SSH_ASKPASS=/tmp/vex-askpass.sh SSH_ASKPASS_REQUIRE=force
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o NumberOfPasswordPrompts=1"
-start_tunnel() {{
-  HOST="$1"
-  setsid ssh $SSH_OPTS -R 80:127.0.0.1:{p} "$HOST" </dev/null >/tmp/vex-tunnel.log 2>&1 &
-  echo $! > /tmp/vex-tunnel.pid
-  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
-    URL=$(grep -Eio 'https://[A-Za-z0-9._-]+\\.localhost\\.run' /tmp/vex-tunnel.log 2>/dev/null | head -n1)
-    if [ -z "$URL" ]; then
-      HOSTLINE=$(grep -Eio '[A-Za-z0-9._-]+\\.localhost\\.run' /tmp/vex-tunnel.log 2>/dev/null | head -n1)
-      if [ -n "$HOSTLINE" ]; then URL="https://$HOSTLINE"; fi
-    fi
-    if [ -n "$URL" ]; then return 0; fi
-    if [ -f /tmp/vex-tunnel.pid ]; then
-      PID=$(cat /tmp/vex-tunnel.pid 2>/dev/null)
-      if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then return 1; fi
-    fi
-    sleep 1
-  done
-  return 1
+extract_url() {{
+  U=$(grep -Eio 'https://[A-Za-z0-9._-]+\\.(localhost\\.run|lhr\\.life|lhrtunnel\\.link|lhr\\.rocks|lhr\\.link)[A-Za-z0-9._/-]*' /tmp/vex-tunnel.log 2>/dev/null | head -n1)
+  if [ -z "$U" ]; then
+    H=$(grep -Eio '[A-Za-z0-9._-]+\\.(localhost\\.run|lhr\\.life|lhrtunnel\\.link|lhr\\.rocks|lhr\\.link)' /tmp/vex-tunnel.log 2>/dev/null | head -n1)
+    if [ -n "$H" ]; then U="https://$H"; fi
+  fi
+  echo "$U"
 }}
+setsid ssh $SSH_OPTS -R 80:127.0.0.1:{p} nokey@localhost.run </dev/null >/tmp/vex-tunnel.log 2>&1 &
+echo $! > /tmp/vex-tunnel.pid
 URL=""
-for HOST in localhost.run nokey@localhost.run; do
-  if [ -f /tmp/vex-tunnel.pid ]; then kill "$(cat /tmp/vex-tunnel.pid)" >/dev/null 2>&1 || true; fi
-  if start_tunnel "$HOST"; then
-    break
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+  URL=$(extract_url)
+  if [ -n "$URL" ]; then break; fi
+  if [ -f /tmp/vex-tunnel.pid ]; then
+    PID=$(cat /tmp/vex-tunnel.pid 2>/dev/null)
+    if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then break; fi
   fi
+  sleep 1
 done
-if [ -z "$URL" ]; then
-  URL=$(grep -Eio 'https://[A-Za-z0-9._-]+\\.localhost\\.run' /tmp/vex-tunnel.log 2>/dev/null | head -n1)
-  if [ -z "$URL" ]; then
-    HOSTLINE=$(grep -Eio '[A-Za-z0-9._-]+\\.localhost\\.run' /tmp/vex-tunnel.log 2>/dev/null | head -n1)
-    if [ -n "$HOSTLINE" ]; then URL="https://$HOSTLINE"; fi
-  fi
-fi
 echo "TOKEN={t}"
 echo "PORT={p}"
 echo "URL=${{URL:-}}"

@@ -196,8 +196,8 @@ Started from the dashboard **SSH** button when the container has no public IP:
 From the dashboard **📁 Files** button or `/file_manager <vps_id>`:
 
 - Python stdlib HTTP server on `127.0.0.1:8765` inside the VPS (no public IP needed)
-- Reverse tunnel via free **localhost.run** (`ssh -R 80:127.0.0.1:8765 localhost.run`) → HTTPS URL (`*.localhost.run`)
-- No browser screening/dashboard wall — opens the file manager directly
+- Reverse tunnel via free non-auth **localhost.run** (`ssh -R 80:127.0.0.1:8765 nokey@localhost.run`) → HTTPS URL (`*.localhost.run` / `*.lhr.life` / `*.lhrtunnel.link`)
+- No browser screening / dashboard wall (unlike Pinggy free)
 - Token-protected: open `https://….localhost.run/?token=…` (token sent via DM spoiler)
 - Features: browse, upload (multi-file), download, edit text files, mkdir, delete
 - Stop with `/stop_file_manager <vps_id>` (PID-file kill only — never `pkill -f`)
