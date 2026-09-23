@@ -1080,8 +1080,9 @@ for f in /tmp/sshx.pid /tmp/sshx-keeper.pid; do
   if [ -f "$f" ]; then kill "$(cat "$f" 2>/dev/null)" >/dev/null 2>&1 || true; fi
 done
 pkill -x sshx >/dev/null 2>&1 || true
+# only kill our tail keepers (full cmdline match), not unrelated tails
 pkill -f 'tail -f /dev/null' >/dev/null 2>&1 || true
-rm -f /tmp/sshx.log /tmp/sshx.pid /tmp/sshx.out /tmp/sshx.typescript /tmp/sshx-run.log /tmp/sshx-keeper.pid
+rm -f /tmp/sshx.log /tmp/sshx.pid /tmp/sshx.out /tmp/sshx.typescript /tmp/sshx-run.log /tmp/sshx-keeper.pid /tmp/sshx.stdin
 : > /tmp/sshx.log
 echo '--- sshx diag ---'
 command -v sshx >/dev/null 2>&1 && echo HAVE_SSHX_BIN || echo NO_SSHX_BIN
@@ -1110,25 +1111,25 @@ alive() {{
   [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null
 }}
 
-# stdin keeper: sshx treats stdin EOF as quit — keep the pipe open forever
-( sleep 100000 ) &
-echo $! > /tmp/sshx-keeper.pid
+# Whole launch lives in a new session (setsid) so:
+# - our shell exit does not SIGHUP it
+# - outer process-group kill (timeout) does not kill tail/sshx (EOF bug)
+# stdin is held open by `tail -f /dev/null` inside that session.
 
-# --- try 1: installed binary, stdin held open (no timeout on the process) ---
+# --- try 1: installed binary under script(1) PTY (or direct) ---
 if command -v sshx >/dev/null 2>&1; then
   if command -v script >/dev/null 2>&1; then
-    # PTY via script; stdin from keeper pipe so sshx does not see EOF
-    tail -f /dev/null | setsid script -q -e -c 'sshx' /tmp/sshx.typescript >/tmp/sshx.log 2>&1 &
+    setsid sh -c 'tail -f /dev/null | script -q -e -c sshx /tmp/sshx.typescript >/tmp/sshx.log 2>&1' &
   else
-    tail -f /dev/null | setsid sshx >/tmp/sshx.log 2>&1 &
+    setsid sh -c 'tail -f /dev/null | sshx >/tmp/sshx.log 2>&1' &
   fi
-  # $! is the tail (left side of pipe) in some shells — find sshx after start
-  sleep 0.3
+  sleep 0.4
   SSHX_PID=$(pgrep -x sshx 2>/dev/null | head -n1)
   if [ -z "$SSHX_PID" ]; then
     SSHX_PID=$(pgrep -f 'script .*sshx' 2>/dev/null | head -n1)
   fi
-  echo "${{SSHX_PID:-$!}}" > /tmp/sshx.pid
+  # record sshx itself (not the setsid wrapper) so kill -0 is meaningful
+  if [ -n "$SSHX_PID" ]; then echo "$SSHX_PID" > /tmp/sshx.pid; fi
   LINK=$(wait_for_link {timeout})
   sleep 1
   if [ -n "$LINK" ] && alive; then
@@ -1142,23 +1143,21 @@ if command -v sshx >/dev/null 2>&1; then
   pkill -x sshx >/dev/null 2>&1 || true
 fi
 
-# --- try 2: official runner, also without killing sshx after N seconds ---
+# --- try 2: official CI runner (same setsid + open-stdin pattern) ---
 echo '--- sshx run mode ---'
-( sleep 100000 ) &
-echo $! > /tmp/sshx-keeper.pid
 if [ -f /tmp/sshx-get.sh ]; then
-  tail -f /dev/null | setsid sh -c 'sh /tmp/sshx-get.sh run' >/tmp/sshx-run.log 2>&1 &
+  setsid sh -c 'tail -f /dev/null | sh /tmp/sshx-get.sh run >/tmp/sshx-run.log 2>&1' &
 elif command -v curl >/dev/null 2>&1; then
-  tail -f /dev/null | setsid sh -c 'curl -sSf https://sshx.io/get | sh -s run' >/tmp/sshx-run.log 2>&1 &
+  setsid sh -c 'tail -f /dev/null | sh -c "curl -sSf https://sshx.io/get | sh -s run" >/tmp/sshx-run.log 2>&1' &
 else
   echo 'no sshx runner (need binary or curl)'
 fi
-sleep 0.3
+sleep 0.4
 SSHX_PID=$(pgrep -x sshx 2>/dev/null | head -n1)
 if [ -z "$SSHX_PID" ]; then
   SSHX_PID=$(pgrep -f 'sshx' 2>/dev/null | head -n1)
 fi
-echo "${{SSHX_PID:-$!}}" > /tmp/sshx.pid
+if [ -n "$SSHX_PID" ]; then echo "$SSHX_PID" > /tmp/sshx.pid; fi
 LINK=$(wait_for_link {timeout})
 sleep 1
 if [ -n "$LINK" ] && alive; then
@@ -1305,7 +1304,8 @@ exit 3
                 container_id,
                 "if [ -f /tmp/sshx.pid ]; then kill \"$(cat /tmp/sshx.pid 2>/dev/null)\" >/dev/null 2>&1 || true; fi; "
                 "if [ -f /tmp/sshx-keeper.pid ]; then kill \"$(cat /tmp/sshx-keeper.pid 2>/dev/null)\" >/dev/null 2>&1 || true; fi; "
-                "pkill -x sshx >/dev/null 2>&1 || true; true",
+                "pkill -x sshx >/dev/null 2>&1 || true; "
+                "pkill -f 'tail -f /dev/null' >/dev/null 2>&1 || true; true",
                 timeout=15,
             )
         if tool in ("tmate", "all"):
