@@ -1287,6 +1287,142 @@ class CommandModal(discord.ui.Modal, title="Run command in VPS"):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 
+class SSHMethodView(discord.ui.View):
+    """Ask which reverse-access method to generate for a VPS."""
+
+    def __init__(self, vps_id: str, owner_id: str, invoker_id: str) -> None:
+        super().__init__(timeout=120)
+        self.vps_id = vps_id
+        self.owner_id = str(owner_id)
+        self.invoker_id = str(invoker_id)
+
+    def _row(self):
+        return bot.db.get_vps(self.vps_id)
+
+    def _ok(self, interaction: discord.Interaction) -> bool:
+        row = self._row()
+        if not row or not _manage_authorized(interaction.user, row):
+            return False
+        return True
+
+    async def _deny(self, interaction: discord.Interaction) -> None:
+        msg = "Not authorized for this VPS."
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+
+    async def _run_choice(self, interaction: discord.Interaction, method: str) -> None:
+        if not self._ok(interaction):
+            await self._deny(interaction)
+            return
+        row = self._row()
+        assert row is not None
+        if row["status"] != "running":
+            await interaction.response.send_message("VPS is not running.", ephemeral=True)
+            self.stop()
+            return
+        await interaction.response.defer(ephemeral=True)
+        lines = [
+            f"**SSH — {self.vps_id}** ({method})",
+            f"```\nssh {row['username']}@{row['ip_address']} -p {row['ssh_port'] or 22}\n```",
+            f"Password: ||{row['password_plain']}||",
+            "",
+            f"_Generating {method}…_",
+        ]
+        body = "\n".join(lines)
+        try:
+            if method == "sshx":
+                link = await asyncio.wait_for(
+                    asyncio.to_thread(bot.provider.start_sshx, row["container_id"]),
+                    timeout=75,
+                )
+                body = "\n".join(
+                    [
+                        f"**SSH — {self.vps_id}**",
+                        f"```\nssh {row['username']}@{row['ip_address']} -p {row['ssh_port'] or 22}\n```",
+                        f"Password: ||{row['password_plain']}||",
+                        "",
+                        f"**sshx**\n```\n{link}\n```",
+                    ]
+                )
+            elif method == "tmate":
+                cmd = await asyncio.wait_for(
+                    asyncio.to_thread(bot.provider.start_tmate, row["container_id"]),
+                    timeout=45,
+                )
+                body = "\n".join(
+                    [
+                        f"**SSH — {self.vps_id}**",
+                        f"```\nssh {row['username']}@{row['ip_address']} -p {row['ssh_port'] or 22}\n```",
+                        f"Password: ||{row['password_plain']}||",
+                        "",
+                        f"**tmate**\n```\n{cmd}\n```",
+                    ]
+                )
+            else:  # web
+                web = await asyncio.wait_for(
+                    asyncio.to_thread(bot.provider.start_web_terminal, row["container_id"]),
+                    timeout=80,
+                )
+                body = "\n".join(
+                    [
+                        f"**SSH — {self.vps_id}**",
+                        f"```\nssh {row['username']}@{row['ip_address']} -p {row['ssh_port'] or 22}\n```",
+                        f"Password: ||{row['password_plain']}||",
+                        "",
+                        "**Web shell (browser)**",
+                        f"URL: {web['url']}",
+                        f"User: `vex` · Password: ||{web['token']}||",
+                        "_Open URL → basic auth vex / token → root shell._",
+                    ]
+                )
+        except asyncio.TimeoutError:
+            body = (
+                f"**SSH — {self.vps_id}**\n"
+                f"`{method}` timed out.\n"
+                f"```\nssh {row['username']}@{row['ip_address']} -p {row['ssh_port'] or 22}\n```\n"
+                f"Password: ||{row['password_plain']}||"
+            )
+        except Exception as exc:
+            body = (
+                f"**SSH — {self.vps_id}**\n"
+                f"`{method}` failed: `{str(exc)[:500]}`\n"
+                f"```\nssh {row['username']}@{row['ip_address']} -p {row['ssh_port'] or 22}\n```\n"
+                f"Password: ||{row['password_plain']}||"
+            )
+
+        body = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", body)
+        body = body.replace("\x1b", "")
+        if len(body) > 3900:
+            body = body[:3900] + "\n…[truncated]"
+        try:
+            await interaction.user.send(body)
+            await interaction.followup.send(
+                f"🔑 {method} details sent via DM.", ephemeral=True
+            )
+        except discord.HTTPException:
+            embed = discord.Embed(
+                title=f"SSH — {self.vps_id} ({method})",
+                description=body[:3900],
+                color=discord.Color.green(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        self.stop()
+
+    @discord.ui.button(label="sshx", style=discord.ButtonStyle.primary, emoji="🔗", row=0)
+    async def sshx_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._run_choice(interaction, "sshx")
+
+    @discord.ui.button(label="Web terminal", style=discord.ButtonStyle.success, emoji="🌐", row=0)
+    async def web_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._run_choice(interaction, "web")
+
+    @discord.ui.button(label="tmate", style=discord.ButtonStyle.secondary, emoji="🖥️", row=0)
+    async def tmate_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._run_choice(interaction, "tmate")
+
+
 class ManageVPSView(discord.ui.View):
     """Interactive dashboard for a single VPS: lifecycle, stats, logs, SSH, reinstall, delete."""
 
@@ -1627,88 +1763,17 @@ class ManageVPSView(discord.ui.View):
         if row["status"] != "running":
             await interaction.response.send_message("VPS is not running.", ephemeral=True)
             return
-        await interaction.response.defer(ephemeral=True)
-        lines = [
-            f"**SSH — {self.vps_id}**",
-            f"```\nssh {row['username']}@{row['ip_address']} -p {row['ssh_port'] or 22}\n```",
+        view = SSHMethodView(self.vps_id, self.owner_id, str(interaction.user.id))
+        await interaction.response.send_message(
+            f"**SSH access for `{self.vps_id}`** — choose a method:\n"
+            "• **sshx** — browser link (`sshx.io`)\n"
+            "• **Web terminal** — browser shell via localhost.run\n"
+            "• **tmate** — `ssh …@….tmate.io` (often blocked)\n\n"
+            f"Direct: `ssh {row['username']}@{row['ip_address']} -p {row['ssh_port'] or 22}`\n"
             f"Password: ||{row['password_plain']}||",
-            "",
-        ]
-
-        async def _call(coro_factory, limit: int):
-            return await asyncio.wait_for(coro_factory(), timeout=limit)
-
-        # Always try sshx first (probe false-negatives were skipping it).
-        # Fall back: tmate → web shell (localhost.run).
-        link = None
-        err_shx = ""
-        note = ""
-
-        try:
-            link = await _call(
-                lambda: asyncio.to_thread(
-                    bot.provider.start_sshx, row["container_id"]
-                ),
-                75,
-            )
-            lines.append(f"**sshx**\n```\n{link}\n```")
-        except asyncio.TimeoutError:
-            err_shx = "timed out after 75s"
-        except Exception as exc:
-            err_shx = str(exc)
-
-        if not link:
-            try:
-                cmd = await _call(
-                    lambda: asyncio.to_thread(
-                        bot.provider.start_tmate, row["container_id"]
-                    ),
-                    35,
-                )
-                lines.append(f"**tmate**\n```\n{cmd}\n```")
-                link = cmd
-            except Exception as exc:
-                low = str(exc).lower()
-                if "dns_ssh_tmate=fail" in low or "tcp_22=fail" in low or "blocked" in low:
-                    note = "_ssh.tmate.io:22 blocked._"
-
-        if not link:
-            try:
-                web = await _call(
-                    lambda: asyncio.to_thread(
-                        bot.provider.start_web_terminal, row["container_id"]
-                    ),
-                    80,
-                )
-                lines.append("**Web shell (browser)**")
-                lines.append(f"URL: {web['url']}")
-                lines.append(f"User: `vex` · Password: ||{web['token']}||")
-                lines.append("_Open URL → basic auth vex / token → root shell._")
-                if err_shx:
-                    lines.append(f"_sshx: `{err_shx[:240]}`_")
-                if note:
-                    lines.append(note)
-            except Exception as exc:
-                if err_shx:
-                    lines.append(f"sshx: `{err_shx[:400]}`")
-                lines.append(f"web shell: `{str(exc)[:400]}`")
-                lines.append(
-                    "_Tip: direct `ssh root@ip -p 22` still works if port 22 is open._"
-                )
-
-        body = "\n".join(lines)
-        body = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", body)  # strip ANSI
-        body = body.replace("\x1b", "")
-        if len(body) > 3900:
-            body = body[:3900] + "\n…[truncated]"
-        try:
-            await interaction.user.send(body)
-            await interaction.followup.send("🔑 SSH details sent via DM.", ephemeral=True)
-        except discord.HTTPException:
-            embed = discord.Embed(
-                title=f"SSH — {self.vps_id}", description=body[:3900], color=discord.Color.green()
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            view=view,
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="🔁 Reinstall", style=discord.ButtonStyle.danger, custom_id="manage_reinstall", row=3)
     async def reinstall_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

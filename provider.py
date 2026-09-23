@@ -1019,21 +1019,34 @@ tail -n 20 /tmp/vex-sshx-install.log 2>/dev/null || true
         import re
 
         text = LXDProvider._strip_ansi(text)
-        # Prefer explicit LINK= lines from our runner script
+        # Prefer explicit LINK= lines (may include "path:url" from grep -H)
         m = re.search(r"^LINK=(\S+)", text, re.MULTILINE)
         if m and m.group(1).strip():
-            return m.group(1).strip().rstrip(".,);'\"")
+            raw = m.group(1).strip().rstrip(".,);'\"")
+            # strip "/tmp/foo.log:" grep filename prefix
+            m2 = re.search(r"(https?://\S+|ssh\s+\S*@sshx\.io\S*)", raw)
+            if m2:
+                return m2.group(1).rstrip(".,);'\"")
+            if raw.startswith("http") or "sshx.io" in raw:
+                return raw
+        # Bare URL anywhere, including "path:https://..." from multi-file grep
         for pat in (
-            r"https://sshx\.io/s/[A-Za-z0-9._/-]+#?[A-Za-z0-9._-]*",
-            r"https://sshx\.io/\S+",
-            r"ssh\s+\S+@sshx\.io\S*",
-            r"sshx\.io/\S+",
+            r"(https://sshx\.io/s/[A-Za-z0-9]+#[A-Za-z0-9]+)",
+            r"(https://sshx\.io/s/[A-Za-z0-9._/-]+#?[A-Za-z0-9._-]*)",
+            r"(https://sshx\.io/\S+)",
+            r"(ssh\s+\S+@sshx\.io\S*)",
+            r"(sshx\.io/\S+)",
         ):
             m = re.search(pat, text, re.IGNORECASE)
             if m:
-                url = m.group(0).strip().rstrip(".,);'\"")
+                url = m.group(1).strip().rstrip(".,);'\"")
+                # drop any leading "/tmp/....:" 
+                if ":" in url and not url.startswith("http") and not url.startswith("ssh"):
+                    url = url.split(":", 1)[-1]
+                url = re.sub(r"^/tmp/\S+:", "", url)
                 url = re.sub(r"[\x00-\x1f]+$", "", url)
-                return url
+                if url.startswith("http") or "sshx.io" in url:
+                    return url
         return ""
 
     @staticmethod
@@ -1075,8 +1088,9 @@ if command -v curl >/dev/null 2>&1; then
 fi
 
 extract_link() {{
-  grep -Eo 'https://sshx\\.io/[A-Za-z0-9._/#?=-]+|ssh [A-Za-z0-9._-]+@sshx\\.io[A-Za-z0-9._/-]*' \\
-    /tmp/sshx.log /tmp/sshx.typescript /tmp/sshx-run.log 2>/dev/null | head -n1
+  cat /tmp/sshx.log /tmp/sshx.typescript /tmp/sshx-run.log 2>/dev/null \\
+    | grep -Eo 'https://sshx\\.io/s/[A-Za-z0-9]+#[A-Za-z0-9]+|https://sshx\\.io/[^[:space:]]+|ssh [A-Za-z0-9._-]+@sshx\\.io[^[:space:]]*' \\
+    | head -n1
 }}
 
 wait_for_link() {{
@@ -1148,7 +1162,7 @@ exit 3
         url = ""
         for line in out.splitlines():
             if line.startswith("LINK=") and line[5:].strip():
-                url = line[5:].strip()
+                url = self._extract_sshx_url(line[5:].strip()) or line[5:].strip()
                 break
         if not url:
             url = self._extract_sshx_url(out)
