@@ -1330,6 +1330,8 @@ echo WEB_OK
                 container_id,
                 "if [ -f /tmp/vex-ttyd.pid ]; then kill \"$(cat /tmp/vex-ttyd.pid)\" >/dev/null 2>&1 || true; rm -f /tmp/vex-ttyd.pid; fi; "
                 "if [ -f /tmp/vex-ttyd-tunnel.pid ]; then kill \"$(cat /tmp/vex-ttyd-tunnel.pid)\" >/dev/null 2>&1 || true; rm -f /tmp/vex-ttyd-tunnel.pid; fi; "
+                "if [ -f /tmp/vex-ttyd-tunnel-keeper.pid ]; then kill \"$(cat /tmp/vex-ttyd-tunnel-keeper.pid)\" >/dev/null 2>&1 || true; rm -f /tmp/vex-ttyd-tunnel-keeper.pid; fi; "
+                "rm -f /tmp/vex-ttyd-tunnel.fifo; "
                 "pkill -x ttyd >/dev/null 2>&1 || true; echo WEB_STOPPED",
                 timeout=20,
             )
