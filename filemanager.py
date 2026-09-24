@@ -218,11 +218,14 @@ tr.is-dir .name-cell a:hover { color:#d0e4ff; }
 def _ok(req: "Handler") -> None:
     q = urllib.parse.parse_qs(urllib.parse.urlparse(req.path).query)
     if req.headers.get("X-FM-Token") == TOKEN:
+        req._fm_authed = True
         return
     if q.get("token", [""])[0] == TOKEN:
+        req._fm_authed = True
         return
     cookie = req.headers.get("Cookie", "")
     if f"fm_token={TOKEN}" in cookie:
+        req._fm_authed = True
         return
     req.send_response(401)
     req.send_header("Content-Type", "text/html; charset=utf-8")
@@ -243,6 +246,11 @@ def _ok(req: "Handler") -> None:
         ).encode()
     )
     raise PermissionError
+
+
+def _auth_cookie() -> str:
+    # Path=/ so folder links (which keep ?token=) and bare POSTs both work
+    return f"fm_token={TOKEN}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800"
 
 
 def _safe(path: str) -> Path:
@@ -372,6 +380,8 @@ class Handler(BaseHTTPRequestHandler):
     def _redirect(self, loc: str) -> None:
         self.send_response(302)
         self.send_header("Location", loc)
+        if getattr(self, "_fm_authed", False):
+            self.send_header("Set-Cookie", _auth_cookie())
         self.end_headers()
 
     def _html(self, data: bytes, code: int = 200) -> None:
@@ -379,6 +389,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        if getattr(self, "_fm_authed", False):
+            self.send_header("Set-Cookie", _auth_cookie())
         self.end_headers()
         self.wfile.write(data)
 
@@ -514,7 +526,7 @@ class Handler(BaseHTTPRequestHandler):
                     f"<a href='{href}'>{html.escape(name)}</a></div></td>"
                     f"<td class='right'>—</td><td class='actions'>"
                     f"<a class='btn ghost sm' href='{href}'>Open</a>"
-                    f"<form method='post' action='/delete' onsubmit=\"return confirm('Delete {html.escape(name)}?')\">"
+                    f"<form method='post' action='/delete?token={TOKEN}' onsubmit=\"return confirm('Delete {html.escape(name)}?')\">"
                     f"<input type='hidden' name='path' value='{html.escape(str(ent))}'>"
                     f"<button class='btn danger sm' type='submit'>Delete</button></form></td></tr>"
                 )
@@ -534,7 +546,7 @@ class Handler(BaseHTTPRequestHandler):
                     f"<td class='right'>{size}</td><td class='actions'>"
                     f"<a class='btn ghost sm' href='{edit}'>Edit</a>"
                     f"<a class='btn ghost sm' href='{dl}'>Download</a>"
-                    f"<form method='post' action='/delete' onsubmit=\"return confirm('Delete {html.escape(name)}?')\">"
+                    f"<form method='post' action='/delete?token={TOKEN}' onsubmit=\"return confirm('Delete {html.escape(name)}?')\">"
                     f"<input type='hidden' name='path' value='{html.escape(str(ent))}'>"
                     f"<button class='btn danger sm' type='submit'>Delete</button></form></td></tr>"
                 )
@@ -557,7 +569,7 @@ class Handler(BaseHTTPRequestHandler):
     <input type="text" name="path" placeholder="/etc" value="{html.escape(rel_disp)}">
     <button type="submit">Go</button>
   </form>
-  <form method="post" action="/mkdir">
+  <form method="post" action="/mkdir?token={TOKEN}">
     <input type="hidden" name="path" value="{html.escape(str(cur))}">
     <input type="text" name="name" placeholder="new folder" required>
     <button type="submit">New folder</button>
@@ -565,7 +577,7 @@ class Handler(BaseHTTPRequestHandler):
   <span class="count">{n_dirs} folders · {n_files} files</span>
 </div>
 <div class="drop" id="drop">
-  <form method="post" action="/upload" enctype="multipart/form-data">
+  <form method="post" action="/upload?token={TOKEN}" enctype="multipart/form-data">
     <input type="hidden" name="path" value="{html.escape(str(cur))}">
     <input type="file" id="upfile" name="file" required multiple>
     <button type="submit">Upload</button>
@@ -608,7 +620,7 @@ class Handler(BaseHTTPRequestHandler):
     <span class="path">{html.escape(p.name)}</span>
     <span class="size">{html.escape(_human(p.stat().st_size))}</span>
   </div>
-  <form method="post" action="/save">
+  <form method="post" action="/save?token={TOKEN}">
     <input type="hidden" name="path" value="{html.escape(rel)}">
     <textarea name="content" spellcheck="false">{html.escape(text)}</textarea>
     <div class="editor-actions">
@@ -701,7 +713,12 @@ if __name__ == "__main__":
 
 
 def build_start_script(token: str, port: int = 8765) -> str:
-    """Free non-auth tunnel: ssh -R 80:localhost:PORT nokey@localhost.run"""
+    """Free non-auth tunnel: ssh -N -R 80:localhost:PORT nokey@localhost.run
+
+    -N (no remote command) + open stdin keep the reverse tunnel alive after the
+    launcher exits. Without -N, localhost.run runs a session that exits on EOF
+    from </dev/null — URL prints once, then the tunnel dies ("auto stop").
+    """
     import base64
 
     fm_b64 = base64.b64encode(FILE_MANAGER_PY.encode("utf-8")).decode("ascii")
@@ -720,12 +737,12 @@ fi
 command -v python3 >/dev/null 2>&1 || {{ echo NO_PYTHON; exit 2; }}
 if [ -f /tmp/vex-fm.pid ]; then kill "$(cat /tmp/vex-fm.pid)" >/dev/null 2>&1 || true; fi
 if [ -f /tmp/vex-tunnel.pid ]; then kill "$(cat /tmp/vex-tunnel.pid)" >/dev/null 2>&1 || true; fi
-rm -f /tmp/vex-fm.log /tmp/vex-fm.pid /tmp/vex-tunnel.log /tmp/vex-tunnel.pid
+rm -f /tmp/vex-fm.log /tmp/vex-fm.pid /tmp/vex-tunnel.log /tmp/vex-tunnel.pid /tmp/vex-tunnel.stop
 echo {fm_b64} | base64 -d > /tmp/vex-fm.py || {{ echo FM_WRITE_FAIL; exit 3; }}
-setsid python3 /tmp/vex-fm.py --host 127.0.0.1 --port {p} --token {t} --root / >/tmp/vex-fm.log 2>&1 &
-echo $! > /tmp/vex-fm.pid
+# setsid + exec so $! / $$ is the long-lived PID
+setsid sh -c 'echo $$ > /tmp/vex-fm.pid; exec python3 /tmp/vex-fm.py --host 127.0.0.1 --port {p} --token {t} --root /' >/tmp/vex-fm.log 2>&1 &
 sleep 1
-if ! kill -0 "$(cat /tmp/vex-fm.pid)" 2>/dev/null; then
+if [ ! -s /tmp/vex-fm.pid ] || ! kill -0 "$(cat /tmp/vex-fm.pid 2>/dev/null)" 2>/dev/null; then
   echo FM_START_FAIL
   cat /tmp/vex-fm.log 2>/dev/null || true
   exit 4
@@ -733,10 +750,10 @@ fi
 command -v ssh >/dev/null 2>&1 || {{
   command -v apt-get >/dev/null 2>&1 && apt-get install -y -qq openssh-client >/dev/null 2>&1 || true
 }}
+command -v ssh >/dev/null 2>&1 || {{ echo NO_SSH; exit 6; }}
 printf '#!/bin/sh\\necho\\n' > /tmp/vex-askpass.sh
 chmod +x /tmp/vex-askpass.sh
 export DISPLAY=:0 SSH_ASKPASS=/tmp/vex-askpass.sh SSH_ASKPASS_REQUIRE=force
-SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o NumberOfPasswordPrompts=1"
 extract_url() {{
   U=$(grep -Eio 'https://[A-Za-z0-9._-]+\\.(localhost\\.run|lhr\\.life|lhrtunnel\\.link|lhr\\.rocks|lhr\\.link)[A-Za-z0-9._/-]*' /tmp/vex-tunnel.log 2>/dev/null | head -n1)
   if [ -z "$U" ]; then
@@ -745,13 +762,21 @@ extract_url() {{
   fi
   echo "$U"
 }}
-setsid ssh $SSH_OPTS -R 80:127.0.0.1:{p} nokey@localhost.run </dev/null >/tmp/vex-tunnel.log 2>&1 &
-echo $! > /tmp/vex-tunnel.pid
+# FIFO: a background writer holds the write end open so ssh never sees stdin EOF.
+# EOF immediately after connect is what used to kill the tunnel once the URL printed.
+rm -f /tmp/vex-tunnel.fifo
+mkfifo /tmp/vex-tunnel.fifo 2>/dev/null || true
+sleep 100000 > /tmp/vex-tunnel.fifo &
+echo $! > /tmp/vex-tunnel-keeper.pid
+setsid sh -c "
+  echo \\$\\$ > /tmp/vex-tunnel.pid
+  exec ssh -N -T -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o NumberOfPasswordPrompts=1 -o TCPKeepAlive=yes -R 80:127.0.0.1:{p} nokey@localhost.run
+" < /tmp/vex-tunnel.fifo > /tmp/vex-tunnel.log 2>&1 &
 URL=""
 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
   URL=$(extract_url)
   if [ -n "$URL" ]; then break; fi
-  if [ -f /tmp/vex-tunnel.pid ]; then
+  if [ -s /tmp/vex-tunnel.pid ]; then
     PID=$(cat /tmp/vex-tunnel.pid 2>/dev/null)
     if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then break; fi
   fi
@@ -760,23 +785,33 @@ done
 echo "TOKEN={t}"
 echo "PORT={p}"
 echo "URL=${{URL:-}}"
-if [ -n "$URL" ]; then
-  echo FM_OK
-else
+if [ -z "$URL" ]; then
   echo FM_TUNNEL_FAIL
   tail -n 40 /tmp/vex-tunnel.log 2>/dev/null || true
   exit 5
 fi
+# confirm tunnel + FM still alive after URL is known (catches immediate death)
+sleep 2
+if [ ! -s /tmp/vex-tunnel.pid ] || ! kill -0 "$(cat /tmp/vex-tunnel.pid 2>/dev/null)" 2>/dev/null; then
+  echo FM_TUNNEL_DIED
+  tail -n 40 /tmp/vex-tunnel.log 2>/dev/null || true
+  exit 7
+fi
+if [ ! -s /tmp/vex-fm.pid ] || ! kill -0 "$(cat /tmp/vex-fm.pid 2>/dev/null)" 2>/dev/null; then
+  echo FM_DIED
+  cat /tmp/vex-fm.log 2>/dev/null || true
+  exit 8
+fi
+echo FM_OK
 """
 
 
 def build_stop_script() -> str:
-    return (
-        "set +e; "
-        "if [ -f /tmp/vex-fm.pid ]; then kill \"$(cat /tmp/vex-fm.pid)\" >/dev/null 2>&1 || true; "
-        "  rm -f /tmp/vex-fm.pid; fi; "
-        "if [ -f /tmp/vex-tunnel.pid ]; then kill \"$(cat /tmp/vex-tunnel.pid)\" >/dev/null 2>&1 || true; "
-        "  rm -f /tmp/vex-tunnel.pid; fi; "
-        "rm -f /tmp/vex-tunnel.log; "
-        "echo FM_STOPPED"
-    )
+    return r"""set +e
+touch /tmp/vex-tunnel.stop 2>/dev/null
+if [ -f /tmp/vex-fm.pid ]; then kill "$(cat /tmp/vex-fm.pid)" >/dev/null 2>&1 || true; rm -f /tmp/vex-fm.pid; fi
+if [ -f /tmp/vex-tunnel.pid ]; then kill "$(cat /tmp/vex-tunnel.pid)" >/dev/null 2>&1 || true; rm -f /tmp/vex-tunnel.pid; fi
+if [ -f /tmp/vex-tunnel-keeper.pid ]; then kill "$(cat /tmp/vex-tunnel-keeper.pid)" >/dev/null 2>&1 || true; rm -f /tmp/vex-tunnel-keeper.pid; fi
+rm -f /tmp/vex-tunnel.fifo /tmp/vex-tunnel.log /tmp/vex-tunnel.stop
+echo FM_STOPPED
+"""
