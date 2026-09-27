@@ -189,6 +189,22 @@ class Database:
             )
             """
         )
+        self._exec(
+            """
+            CREATE TABLE IF NOT EXISTS trust_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                guild_id TEXT DEFAULT '',
+                verdict TEXT NOT NULL,
+                score INTEGER DEFAULT 0,
+                reasons TEXT DEFAULT '[]',
+                questions TEXT DEFAULT '[]',
+                answers TEXT DEFAULT '[]',
+                answered INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
 
         self._repair_vps_schema()
         self._repair_deployment_logs_schema()
@@ -1140,6 +1156,50 @@ class Database:
             "SELECT * FROM deployment_logs ORDER BY id DESC LIMIT ?", (limit,)
         )
 
+    # ── trust / AI verification reports ─────────────────────
+    def save_trust_report(
+        self,
+        user_id: str,
+        verdict: str,
+        score: int,
+        reasons: list[str],
+        questions: list[str],
+        answers: list[str],
+        guild_id: str = "",
+        answered: bool = True,
+    ) -> int:
+        cur = self._exec(
+            """
+            INSERT INTO trust_reports
+                (user_id, guild_id, verdict, score, reasons, questions, answers, answered, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                user_id,
+                guild_id,
+                verdict,
+                int(score),
+                json.dumps(reasons, ensure_ascii=False),
+                json.dumps(questions, ensure_ascii=False),
+                json.dumps(answers, ensure_ascii=False),
+                1 if answered else 0,
+                utcnow(),
+            ),
+        )
+        return int(cur.lastrowid or 0)
+
+    def latest_trust_report(self, user_id: str) -> sqlite3.Row | None:
+        return self._fetch_one(
+            "SELECT * FROM trust_reports WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        )
+
+    def count_running_vps(self) -> int:
+        row = self._fetch_one(
+            "SELECT COUNT(*) AS n FROM vps_instances WHERE status = 'running'"
+        )
+        return int(row["n"]) if row else 0
+
     def export_backup(self) -> dict[str, Any]:
         tables = [
             "system_settings",
@@ -1152,6 +1212,7 @@ class Database:
             "banned_users",
             "admin_users",
             "plans",
+            "trust_reports",
         ]
         data: dict[str, Any] = {}
         for table in tables:

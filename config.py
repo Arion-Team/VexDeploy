@@ -47,6 +47,28 @@ DEFAULT_DISK_GB = int(os.getenv("DEFAULT_DISK_GB", "10"))
 
 MAX_VPS_PER_USER = int(os.getenv("MAX_VPS_PER_USER", "3"))
 
+# AI (Google Gemini)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+AI_CHAT_ENABLED = os.getenv("AI_CHAT_ENABLED", "1").strip() not in {"0", "false", "False"}
+AI_CHAT_COOLDOWN = int(os.getenv("AI_CHAT_COOLDOWN", "30"))
+AI_CHAT_TIMEOUT = int(os.getenv("AI_CHAT_TIMEOUT", "25"))
+AI_VERIFICATION_ENABLED = os.getenv("AI_VERIFICATION_ENABLED", "1").strip() not in {"0", "false", "False"}
+VERIFICATION_TIMEOUT = int(os.getenv("VERIFICATION_TIMEOUT", "600"))
+TRUST_ROLE_NAMES: dict[str, str] = {
+    "trusted": os.getenv("TRUSTED_ROLE_NAME", "Trusted"),
+    "untrusted": os.getenv("UNTRUSTED_ROLE_NAME", "Untrusted"),
+    "scammer": os.getenv("SCAMMER_ROLE_NAME", "Scammer"),
+    "spammer": os.getenv("SPAMMER_ROLE_NAME", "Spammer"),
+}
+TRUST_VERDICTS = ("trusted", "untrusted", "scammer", "spammer")
+TRUST_VERDICT_COLORS: dict[str, int] = {
+    "trusted": 0x2ECC71,
+    "untrusted": 0xF1C40F,
+    "scammer": 0xE74C3C,
+    "spammer": 0x992D22,
+}
+
 # Runtime settings seeded into DB
 DEFAULT_SETTINGS: dict[str, str] = {
     "required_invites": "5",
@@ -60,6 +82,9 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "log_channel_id": "0",
     "completion_channel_id": "0",
     "autostart_on_ready": "1",
+    "ai_chat_enabled": "1" if AI_CHAT_ENABLED else "0",
+    "ai_chat_cooldown": str(AI_CHAT_COOLDOWN),
+    "ai_verification_enabled": "1" if AI_VERIFICATION_ENABLED else "0",
 }
 
 # White-label brand (admin-editable)
