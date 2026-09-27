@@ -1122,6 +1122,12 @@ echo '--- sshx.typescript ---'
 cat /tmp/sshx.typescript 2>/dev/null || true
 echo '--- sshx-run.log ---'
 cat /tmp/sshx-run.log 2>/dev/null || true
+echo '--- net diag ---'
+getent ahosts sshx.io 2>/dev/null | head -n3 || echo NO_DNS
+ip -4 route show default 2>/dev/null | head -n1 || echo NO_IPV4_ROUTE
+ip -6 route show default 2>/dev/null | head -n1 || echo NO_IPV6_ROUTE
+timeout 5 bash -c 'exec 3<>/dev/tcp/sshx.io/22' && echo SSHX22_OK || echo SSHX22_FAIL
+timeout 5 bash -c 'exec 3<>/dev/tcp/sshx.io/443' && echo SSHX443_OK || echo SSHX443_FAIL
 if [ -n "$LINK" ]; then
   echo "LINK_DEAD=$LINK"
 fi
@@ -1291,8 +1297,12 @@ if [ -z "$URL" ]; then
   echo WEB_TUNNEL_FAIL
   echo '--- tunnel log ---'
   cat /tmp/vex-ttyd-tunnel.log 2>/dev/null || true
-  echo '--- ssh procs ---'
-  pgrep -af 'ssh|tail' 2>/dev/null || true
+  echo '--- net diag ---'
+  getent ahosts localhost.run 2>/dev/null | head -n3 || echo NO_DNS
+  ip -4 route show default 2>/dev/null | head -n1 || echo NO_IPV4_ROUTE
+  ip -6 route show default 2>/dev/null | head -n1 || echo NO_IPV6_ROUTE
+  timeout 5 bash -c 'exec 3<>/dev/tcp/localhost.run/22' && echo LR22_OK || echo LR22_FAIL
+  curl -sS -m 6 -o /dev/null -w 'LR_HTTP %{{http_code}}\n' https://localhost.run || echo LR_HTTP_FAIL
   exit 5
 fi
 sleep 2

@@ -791,8 +791,12 @@ if [ -z "$URL" ]; then
   echo FM_TUNNEL_FAIL
   echo '--- tunnel log ---'
   cat /tmp/vex-tunnel.log 2>/dev/null || true
-  echo '--- ssh procs ---'
-  pgrep -af ssh 2>/dev/null || true
+  echo '--- net diag ---'
+  getent ahosts localhost.run 2>/dev/null | head -n3 || echo NO_DNS
+  ip -4 route show default 2>/dev/null | head -n1 || echo NO_IPV4_ROUTE
+  ip -6 route show default 2>/dev/null | head -n1 || echo NO_IPV6_ROUTE
+  timeout 5 bash -c 'exec 3<>/dev/tcp/localhost.run/22' && echo LR22_OK || echo LR22_FAIL
+  curl -sS -m 6 -o /dev/null -w 'LR_HTTP %{{http_code}}\n' https://localhost.run || echo LR_HTTP_FAIL
   exit 5
 fi
 sleep 2
