@@ -378,8 +378,14 @@ class VexBot(commands.Bot):
                 )
             except (AIError, asyncio.TimeoutError, TimeoutError) as exc:
                 logger.warning("AI mention reply failed: %s", exc)
+                reason = (str(exc) or type(exc).__name__).replace("\n", " ")
+                if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+                    reason = f"timeout after {config.AI_CHAT_TIMEOUT}s"
+                reason = re.sub(r"key=[^&\s'\"]+", "key=***", reason)[:160]
                 try:
-                    await message.reply("AI is unavailable right now — try again shortly.")
+                    await message.reply(
+                        f"AI is unavailable right now ({reason}) — try again shortly."
+                    )
                 except discord.HTTPException:
                     pass
                 return

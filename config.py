@@ -49,7 +49,7 @@ MAX_VPS_PER_USER = int(os.getenv("MAX_VPS_PER_USER", "3"))
 
 # AI (Google Gemini)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip() or "gemini-3.8-flash"
 AI_CHAT_ENABLED = os.getenv("AI_CHAT_ENABLED", "1").strip() not in {"0", "false", "False"}
 AI_CHAT_COOLDOWN = int(os.getenv("AI_CHAT_COOLDOWN", "30"))
 AI_CHAT_TIMEOUT = int(os.getenv("AI_CHAT_TIMEOUT", "25"))
