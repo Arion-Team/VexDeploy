@@ -713,11 +713,10 @@ if __name__ == "__main__":
 
 
 def build_start_script(token: str, port: int = 8765) -> str:
-    """Free non-auth tunnel: ssh -N -R 80:localhost:PORT nokey@localhost.run
+    """Free non-auth tunnel via localhost.run.
 
-    -N (no remote command) + open stdin keep the reverse tunnel alive after the
-    launcher exits. Without -N, localhost.run runs a session that exits on EOF
-    from </dev/null — URL prints once, then the tunnel dies ("auto stop").
+    No -N: the URL is printed by a remote session helper.
+    stdin is held open with `tail -f /dev/null` so EOF does not kill the tunnel.
     """
     import base64
 
@@ -739,7 +738,6 @@ if [ -f /tmp/vex-fm.pid ]; then kill "$(cat /tmp/vex-fm.pid)" >/dev/null 2>&1 ||
 if [ -f /tmp/vex-tunnel.pid ]; then kill "$(cat /tmp/vex-tunnel.pid)" >/dev/null 2>&1 || true; fi
 rm -f /tmp/vex-fm.log /tmp/vex-fm.pid /tmp/vex-tunnel.log /tmp/vex-tunnel.pid /tmp/vex-tunnel.stop
 echo {fm_b64} | base64 -d > /tmp/vex-fm.py || {{ echo FM_WRITE_FAIL; exit 3; }}
-# setsid + exec so $! / $$ is the long-lived PID
 setsid sh -c 'echo $$ > /tmp/vex-fm.pid; exec python3 /tmp/vex-fm.py --host 127.0.0.1 --port {p} --token {t} --root /' >/tmp/vex-fm.log 2>&1 &
 sleep 1
 if [ ! -s /tmp/vex-fm.pid ] || ! kill -0 "$(cat /tmp/vex-fm.pid 2>/dev/null)" 2>/dev/null; then
@@ -762,23 +760,27 @@ extract_url() {{
   fi
   echo "$U"
 }}
-# FIFO: a background writer holds the write end open so ssh never sees stdin EOF.
-# EOF immediately after connect is what used to kill the tunnel once the URL printed.
-rm -f /tmp/vex-tunnel.fifo
-mkfifo /tmp/vex-tunnel.fifo 2>/dev/null || true
-sleep 100000 > /tmp/vex-tunnel.fifo &
-echo $! > /tmp/vex-tunnel-keeper.pid
-setsid sh -c "
-  echo \\$\\$ > /tmp/vex-tunnel.pid
-  exec ssh -N -T -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o NumberOfPasswordPrompts=1 -o TCPKeepAlive=yes -R 80:127.0.0.1:{p} nokey@localhost.run
-" < /tmp/vex-tunnel.fifo > /tmp/vex-tunnel.log 2>&1 &
+# Without a remote session, localhost.run never prints its URL.
+# stdin is held open by tail so EOF cannot kill the tunnel.
+pkill -f 'ssh.*nokey@localhost.run' >/dev/null 2>&1 || true
+rm -f /tmp/vex-tunnel.log /tmp/vex-tunnel.pid /tmp/vex-tunnel.fifo /tmp/vex-tunnel-keeper.pid
+setsid sh -c 'tail -f /dev/null | ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o NumberOfPasswordPrompts=1 -o TCPKeepAlive=yes -R 80:127.0.0.1:{p} nokey@localhost.run > /tmp/vex-tunnel.log 2>&1' &
+sleep 0.5
+TUN_PID=$(pgrep -f 'ssh.*nokey@localhost.run' 2>/dev/null | head -n1)
+if [ -n "$TUN_PID" ]; then echo "$TUN_PID" > /tmp/vex-tunnel.pid; fi
 URL=""
 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
   URL=$(extract_url)
   if [ -n "$URL" ]; then break; fi
   if [ -s /tmp/vex-tunnel.pid ]; then
     PID=$(cat /tmp/vex-tunnel.pid 2>/dev/null)
-    if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then break; fi
+    if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then
+      TUN_PID=$(pgrep -f 'ssh.*nokey@localhost.run' 2>/dev/null | head -n1)
+      if [ -n "$TUN_PID" ]; then echo "$TUN_PID" > /tmp/vex-tunnel.pid; else break; fi
+    fi
+  else
+    TUN_PID=$(pgrep -f 'ssh.*nokey@localhost.run' 2>/dev/null | head -n1)
+    if [ -n "$TUN_PID" ]; then echo "$TUN_PID" > /tmp/vex-tunnel.pid; fi
   fi
   sleep 1
 done
@@ -787,14 +789,20 @@ echo "PORT={p}"
 echo "URL=${{URL:-}}"
 if [ -z "$URL" ]; then
   echo FM_TUNNEL_FAIL
-  tail -n 40 /tmp/vex-tunnel.log 2>/dev/null || true
+  echo '--- tunnel log ---'
+  cat /tmp/vex-tunnel.log 2>/dev/null || true
+  echo '--- ssh procs ---'
+  pgrep -af ssh 2>/dev/null || true
   exit 5
 fi
-# confirm tunnel + FM still alive after URL is known (catches immediate death)
 sleep 2
 if [ ! -s /tmp/vex-tunnel.pid ] || ! kill -0 "$(cat /tmp/vex-tunnel.pid 2>/dev/null)" 2>/dev/null; then
+  TUN_PID=$(pgrep -f 'ssh.*nokey@localhost.run' 2>/dev/null | head -n1)
+  if [ -n "$TUN_PID" ]; then echo "$TUN_PID" > /tmp/vex-tunnel.pid; fi
+fi
+if [ ! -s /tmp/vex-tunnel.pid ] || ! kill -0 "$(cat /tmp/vex-tunnel.pid 2>/dev/null)" 2>/dev/null; then
   echo FM_TUNNEL_DIED
-  tail -n 40 /tmp/vex-tunnel.log 2>/dev/null || true
+  cat /tmp/vex-tunnel.log 2>/dev/null || true
   exit 7
 fi
 if [ ! -s /tmp/vex-fm.pid ] || ! kill -0 "$(cat /tmp/vex-fm.pid 2>/dev/null)" 2>/dev/null; then
@@ -808,10 +816,9 @@ echo FM_OK
 
 def build_stop_script() -> str:
     return r"""set +e
-touch /tmp/vex-tunnel.stop 2>/dev/null
 if [ -f /tmp/vex-fm.pid ]; then kill "$(cat /tmp/vex-fm.pid)" >/dev/null 2>&1 || true; rm -f /tmp/vex-fm.pid; fi
 if [ -f /tmp/vex-tunnel.pid ]; then kill "$(cat /tmp/vex-tunnel.pid)" >/dev/null 2>&1 || true; rm -f /tmp/vex-tunnel.pid; fi
-if [ -f /tmp/vex-tunnel-keeper.pid ]; then kill "$(cat /tmp/vex-tunnel-keeper.pid)" >/dev/null 2>&1 || true; rm -f /tmp/vex-tunnel-keeper.pid; fi
-rm -f /tmp/vex-tunnel.fifo /tmp/vex-tunnel.log /tmp/vex-tunnel.stop
+pkill -f 'nokey@localhost\.run' >/dev/null 2>&1 || true
+rm -f /tmp/vex-tunnel.log /tmp/vex-tunnel.fifo /tmp/vex-tunnel-keeper.pid /tmp/vex-tunnel.stop
 echo FM_STOPPED
 """

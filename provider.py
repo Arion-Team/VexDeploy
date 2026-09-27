@@ -1189,7 +1189,7 @@ exit 3
                 container_id,
                 "if [ -f /tmp/vex-ttyd.pid ]; then kill \"$(cat /tmp/vex-ttyd.pid 2>/dev/null)\" >/dev/null 2>&1 || true; fi; "
                 "if [ -f /tmp/vex-ttyd-tunnel.pid ]; then kill \"$(cat /tmp/vex-ttyd-tunnel.pid 2>/dev/null)\" >/dev/null 2>&1 || true; fi; "
-                "if [ -f /tmp/vex-ttyd-tunnel-keeper.pid ]; then kill \"$(cat /tmp/vex-ttyd-tunnel-keeper.pid 2>/dev/null)\" >/dev/null 2>&1 || true; fi; "
+                "pkill -f 'nokey@localhost\\.run' >/dev/null 2>&1 || true; "
                 "rm -f /tmp/vex-ttyd-tunnel.fifo /tmp/vex-ttyd-tunnel-keeper.pid; "
                 "pkill -x ttyd >/dev/null 2>&1 || true; true",
                 timeout=15,
@@ -1209,7 +1209,7 @@ TOKEN={token}
 PORT={port}
 if [ -f /tmp/vex-ttyd.pid ]; then kill "$(cat /tmp/vex-ttyd.pid)" >/dev/null 2>&1 || true; fi
 if [ -f /tmp/vex-ttyd-tunnel.pid ]; then kill "$(cat /tmp/vex-ttyd-tunnel.pid)" >/dev/null 2>&1 || true; fi
-if [ -f /tmp/vex-ttyd-tunnel-keeper.pid ]; then kill "$(cat /tmp/vex-ttyd-tunnel-keeper.pid)" >/dev/null 2>&1 || true; fi
+pkill -f 'nokey@localhost\\.run' >/dev/null 2>&1 || true
 rm -f /tmp/vex-ttyd.log /tmp/vex-ttyd.pid /tmp/vex-ttyd-tunnel.log /tmp/vex-ttyd-tunnel.pid /tmp/vex-ttyd-askpass.sh /tmp/vex-ttyd-tunnel.fifo /tmp/vex-ttyd-tunnel-keeper.pid
 
 install_ttyd() {{
@@ -1267,23 +1267,21 @@ extract_url() {{
   fi
   echo "$U"
 }}
-# FIFO keeps ssh stdin open — EOF kills the reverse tunnel after the URL prints
-rm -f /tmp/vex-ttyd-tunnel.fifo
-mkfifo /tmp/vex-ttyd-tunnel.fifo 2>/dev/null || true
-sleep 100000 > /tmp/vex-ttyd-tunnel.fifo &
-echo $! > /tmp/vex-ttyd-tunnel-keeper.pid
-setsid sh -c "
-  echo \\$\\$ > /tmp/vex-ttyd-tunnel.pid
-  exec ssh -N -T -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o NumberOfPasswordPrompts=1 -o TCPKeepAlive=yes -R 80:127.0.0.1:$PORT nokey@localhost.run
-" < /tmp/vex-ttyd-tunnel.fifo > /tmp/vex-ttyd-tunnel.log 2>&1 &
+# Without a remote session, localhost.run never prints its URL.
+# stdin is held open by tail so the tunnel does not die on EOF.
+pkill -f 'ssh.*nokey@localhost\\.run' >/dev/null 2>&1 || true
+rm -f /tmp/vex-ttyd-tunnel.log /tmp/vex-ttyd-tunnel.pid /tmp/vex-ttyd-tunnel.fifo /tmp/vex-ttyd-tunnel-keeper.pid
+setsid sh -c 'tail -f /dev/null | ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o NumberOfPasswordPrompts=1 -o TCPKeepAlive=yes -R 80:127.0.0.1:'"$PORT"' nokey@localhost.run > /tmp/vex-ttyd-tunnel.log 2>&1' &
+sleep 0.5
+TUN_PID=$(pgrep -f 'ssh.*nokey@localhost\\.run' 2>/dev/null | head -n1)
+if [ -n "$TUN_PID" ]; then echo "$TUN_PID" > /tmp/vex-ttyd-tunnel.pid; fi
 URL=""
 for i in $(seq 1 30); do
   URL=$(extract_url)
   if [ -n "$URL" ]; then break; fi
-  if [ -s /tmp/vex-ttyd-tunnel.pid ]; then
-    PID=$(cat /tmp/vex-ttyd-tunnel.pid 2>/dev/null)
-    if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then break; fi
-  fi
+  TUN_PID=$(pgrep -f 'ssh.*nokey@localhost\\.run' 2>/dev/null | head -n1)
+  if [ -n "$TUN_PID" ]; then echo "$TUN_PID" > /tmp/vex-ttyd-tunnel.pid; fi
+  if [ -z "$TUN_PID" ] && [ "$i" -gt 3 ]; then break; fi
   sleep 1
 done
 echo "TOKEN=$TOKEN"
@@ -1291,13 +1289,20 @@ echo "PORT=$PORT"
 echo "URL=${{URL:-}}"
 if [ -z "$URL" ]; then
   echo WEB_TUNNEL_FAIL
-  tail -n 40 /tmp/vex-ttyd-tunnel.log 2>/dev/null || true
+  echo '--- tunnel log ---'
+  cat /tmp/vex-ttyd-tunnel.log 2>/dev/null || true
+  echo '--- ssh procs ---'
+  pgrep -af 'ssh|tail' 2>/dev/null || true
   exit 5
 fi
 sleep 2
 if [ ! -s /tmp/vex-ttyd-tunnel.pid ] || ! kill -0 "$(cat /tmp/vex-ttyd-tunnel.pid 2>/dev/null)" 2>/dev/null; then
+  TUN_PID=$(pgrep -f 'ssh.*nokey@localhost\\.run' 2>/dev/null | head -n1)
+  if [ -n "$TUN_PID" ]; then echo "$TUN_PID" > /tmp/vex-ttyd-tunnel.pid; fi
+fi
+if [ ! -s /tmp/vex-ttyd-tunnel.pid ] || ! kill -0 "$(cat /tmp/vex-ttyd-tunnel.pid 2>/dev/null)" 2>/dev/null; then
   echo WEB_TUNNEL_DIED
-  tail -n 40 /tmp/vex-ttyd-tunnel.log 2>/dev/null || true
+  cat /tmp/vex-ttyd-tunnel.log 2>/dev/null || true
   exit 7
 fi
 echo WEB_OK
@@ -1330,8 +1335,8 @@ echo WEB_OK
                 container_id,
                 "if [ -f /tmp/vex-ttyd.pid ]; then kill \"$(cat /tmp/vex-ttyd.pid)\" >/dev/null 2>&1 || true; rm -f /tmp/vex-ttyd.pid; fi; "
                 "if [ -f /tmp/vex-ttyd-tunnel.pid ]; then kill \"$(cat /tmp/vex-ttyd-tunnel.pid)\" >/dev/null 2>&1 || true; rm -f /tmp/vex-ttyd-tunnel.pid; fi; "
-                "if [ -f /tmp/vex-ttyd-tunnel-keeper.pid ]; then kill \"$(cat /tmp/vex-ttyd-tunnel-keeper.pid)\" >/dev/null 2>&1 || true; rm -f /tmp/vex-ttyd-tunnel-keeper.pid; fi; "
-                "rm -f /tmp/vex-ttyd-tunnel.fifo; "
+                "pkill -f 'nokey@localhost\\.run' >/dev/null 2>&1 || true; "
+                "rm -f /tmp/vex-ttyd-tunnel.fifo /tmp/vex-ttyd-tunnel-keeper.pid; "
                 "pkill -x ttyd >/dev/null 2>&1 || true; echo WEB_STOPPED",
                 timeout=20,
             )
