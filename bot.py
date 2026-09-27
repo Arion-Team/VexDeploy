@@ -417,13 +417,18 @@ class VexBot(commands.Bot):
         self, user: discord.abc.User, guild: Optional[discord.Guild]
     ) -> None:
         if not str(self.db.get_setting("ai_verification_enabled", "1")) in {"1", "true", "True"}:
+            logger.info("verification skipped for %s — feature disabled (/ai)", user.id)
             return
         if not ai.is_configured():
             logger.warning("trust verification skipped — GEMINI_API_KEY not set")
             return
-        if getattr(user, "bot", False) or user.id in self._verify_active:
+        if getattr(user, "bot", False):
+            return
+        if user.id in self._verify_active:
+            logger.info("verification skipped for %s — already in progress", user.id)
             return
         self._verify_active.add(user.id)
+        logger.info("verification started for %s", user.id)
         try:
             questions = await self._gen_verification_questions()
             brand = scrub_aytro(self.branding.active().get("brand_name", "VexDeploy"))
@@ -438,12 +443,16 @@ class VexBot(commands.Bot):
                     f"(e.g. `1. ...`).\n▸ You have **{minutes} minute(s)** — "
                     "no reply = lower score."
                 ),
-                color=brand_color(self.branding.active().get("primary_color", "cyan")),
+                color=brand_color(self.branding.active()),
             )
             embed.set_footer(text="AI-generated trust report · report-only, no bans")
             try:
                 await user.send(embed=embed)
-            except discord.HTTPException:
+                logger.info("verification questions DM'd to %s", user.id)
+            except discord.HTTPException as exc:
+                logger.warning(
+                    "verification DM failed for %s: %s", user.id, exc
+                )
                 await self.send_log_channel(
                     f"⚠️ Could not DM verification questions to {user.mention} "
                     "(DMs closed) — trust report skipped."
@@ -1090,6 +1099,30 @@ async def trust_cmd(ctx: commands.Context, user: Optional[discord.User] = None) 
         )
         return
     await ctx.send(embed=bot.build_trust_embed(target, row))
+
+
+@bot.hybrid_command(
+    name="verify",
+    description="Manually start AI verification for a user (Admin only)",
+)
+@app_commands.describe(user="Who to verify (default: you)")
+async def verify_cmd(ctx: commands.Context, user: Optional[discord.User] = None) -> None:
+    await ensure_slash_admin_ctx(ctx)
+    target = user or ctx.author
+    if target.bot:
+        await ctx.send("Cannot verify a bot.", ephemeral=True)
+        return
+    if target.id in bot._verify_active:
+        await ctx.send("Verification already in progress for that user.", ephemeral=True)
+        return
+    if not ai.is_configured():
+        await ctx.send("AI is not configured — set `GEMINI_API_KEY` first.", ephemeral=True)
+        return
+    await ctx.send(
+        f"▶ Verification started for {target.mention} — I'll DM the questions now.",
+        ephemeral=True,
+    )
+    bot.spawn(bot.start_trust_verification(target, ctx.guild))
 
 
 # ── VPS user commands ───────────────────────────────────────
