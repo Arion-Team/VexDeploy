@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import urllib.error
 import urllib.request
 
@@ -15,10 +16,17 @@ log = logging.getLogger("vexdeploy.ai")
 
 API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 DEFAULT_TIMEOUT = 25
+# Transient Gemini statuses worth retrying: rate limit / overloaded / server error
+RETRY_STATUSES = {429, 500, 502, 503}
+RETRY_DELAYS = (1.0, 2.5)  # backoff seconds before 2nd/3rd attempt
 
 
 class AIError(RuntimeError):
     """Gemini call failed (network, quota, safety block, bad key)."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def is_configured() -> bool:
@@ -53,7 +61,7 @@ def _generate(
             data = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:400]
-        raise AIError(f"Gemini HTTP {exc.code}: {detail}") from exc
+        raise AIError(f"Gemini HTTP {exc.code}: {detail}", status=exc.code) from exc
     except AIError:
         raise
     except Exception as exc:  # noqa: BLE001 — surface any transport error to caller
@@ -74,23 +82,54 @@ def _call(
     prompt: str,
     system: str | None = None,
     timeout: int = DEFAULT_TIMEOUT,
-    _retry: bool = True,
 ) -> str:
-    try:
-        return _generate(GEMINI_MODEL, prompt, system, timeout)
-    except AIError as exc:
-        # Retired model (e.g. gemini-2.5-flash → gemini-3.8-flash):
-        # follow Google's suggestion once, then give up.
-        if _retry:
-            m = re.search(r"use models/([A-Za-z0-9._-]+)", str(exc))
-            if m and m.group(1) != GEMINI_MODEL:
+    """Call Gemini with retired-model switching + backoff for transient errors.
+
+    Total wall-clock budget is `timeout` seconds (including sleeps), so async
+    wait_for() wrappers with a slightly larger timeout always win.
+    """
+    if not GEMINI_API_KEY:
+        raise AIError("GEMINI_API_KEY is not set")
+    model = GEMINI_MODEL
+    start = time.monotonic()
+    delay_idx = 0
+    switched = False
+    last_exc: AIError | None = None
+    while True:
+        remaining = timeout - (time.monotonic() - start)
+        if remaining < 3:
+            break
+        try:
+            return _generate(model, prompt, system, int(max(3, remaining)))
+        except AIError as exc:
+            last_exc = exc
+            # 404 retired model — follow Google's suggestion once.
+            if exc.status == 404 and not switched:
+                m = re.search(r"use models/([A-Za-z0-9._-]+)", str(exc))
+                if m and m.group(1) != model:
+                    log.warning(
+                        "model %s unavailable — retrying with %s", model, m.group(1)
+                    )
+                    model = m.group(1)
+                    switched = True
+                    continue
+            # 429/5xx overload — short backoff, then retry within budget.
+            if exc.status in RETRY_STATUSES and delay_idx < len(RETRY_DELAYS):
+                nap = RETRY_DELAYS[delay_idx]
+                delay_idx += 1
+                if time.monotonic() - start + nap > timeout:
+                    break
                 log.warning(
-                    "model %s unavailable — retrying with %s",
-                    GEMINI_MODEL,
-                    m.group(1),
+                    "Gemini HTTP %s — retrying in %.1fs (%s)",
+                    exc.status,
+                    nap,
+                    model,
                 )
-                return _generate(m.group(1), prompt, system, timeout)
-        raise
+                time.sleep(nap)
+                continue
+            raise
+    assert last_exc is not None
+    raise last_exc
 
 
 async def chat(prompt: str, system: str | None = None, timeout: int = DEFAULT_TIMEOUT) -> str:

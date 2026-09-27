@@ -527,7 +527,7 @@ class VexBot(commands.Bot):
                 "duration, experience level, and one open question. "
                 'Return ONLY a JSON array of 4 strings, no other text.'
             )
-            raw = await asyncio.wait_for(ai.chat(prompt), timeout=20)
+            raw = await asyncio.wait_for(ai.chat(prompt), timeout=30)
             data = ai.extract_json(raw)
             if isinstance(data, list):
                 qs = [str(q).strip() for q in data if str(q).strip()][:6]
@@ -580,7 +580,9 @@ class VexBot(commands.Bot):
             '"score": <0-100 integer>, "reasons": ["short reason", ...]}'
         )
         try:
-            raw = await asyncio.wait_for(ai.chat(prompt), timeout=config.AI_CHAT_TIMEOUT)
+            raw = await asyncio.wait_for(
+                ai.chat(prompt), timeout=config.AI_CHAT_TIMEOUT + 5
+            )
             data = ai.extract_json(raw)
         except Exception as exc:
             logger.warning("AI trust scoring failed, heuristic fallback: %s", exc)
